@@ -13,17 +13,13 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 # Default values
-DEFAULT_HOST = os.getenv("OLLAMA_HOST", "localhost:11434")
-DEFAULT_MODEL = os.getenv("MODEL_NAME", "mistral:latest")
-
-# Check environment variables (fallback to hardcoded defaults)
-ENV_HOST = os.getenv("OLLAMA_HOST", DEFAULT_HOST)
-ENV_MODEL = os.getenv("MODEL_NAME", DEFAULT_MODEL)
+DEFAULT_HOST = "localhost:11434"
+DEFAULT_MODEL = "mistral:latest"
 
 # Set up argument parsing
 parser = argparse.ArgumentParser(description="Ollama AI Agent CLI - Interact with an AI agent using a local LLM.")
-parser.add_argument("--model", type=str, default=ENV_MODEL, help=f"Model name to use (default: {ENV_MODEL})")
-parser.add_argument("--host", type=str, default=ENV_HOST, help=f"Ollama server host (default: {ENV_HOST})")
+parser.add_argument("--model", type=str, default=os.getenv("MODEL_NAME", DEFAULT_MODEL), help=f"Model name to use (default: {DEFAULT_MODEL})")
+parser.add_argument("--host", type=str, default=os.getenv("OLLAMA_HOST", DEFAULT_HOST), help=f"Ollama server host (default: {DEFAULT_HOST})")
 parser.add_argument("--debug", action="store_true", help="Enable debug mode to print raw responses")
 args = parser.parse_args()
 
@@ -34,66 +30,25 @@ DEBUG_MODE = args.debug
 
 # Connection Check: Ensure Ollama server is reachable
 def check_ollama_connection():
-    """
-    Checks if the Ollama server is reachable before starting.
-    """
     OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/tags"
     try:
         response = requests.get(OLLAMA_API_URL, timeout=3)
         response.raise_for_status()
         print("✅ Successfully connected to Ollama server.")
-    except requests.RequestException as e:
+    except requests.RequestException:
         print(f"❌ Error: Unable to reach Ollama server at {OLLAMA_HOST}.")
-        print("🔹 Ensure the server is running and reachable.")
-        exit(1)  # Exit with an error status
+        exit(1)
 
-# -------------------- Model Check -------------------- #
-def verify_ollama_model(model_name: str) -> bool:
-    """
-    Verifies if the specified model is available on Ollama.
-    """
-    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/tags"
-    try:
-        response = requests.get(OLLAMA_API_URL, timeout=3)
-        response.raise_for_status()
-        models = response.json().get("models", [])
-
-        # Extract model names from response
-        available_models = [m["name"] for m in models]
-
-        if model_name in available_models:
-            print(f"✅ Model '{model_name}' is available on Ollama server.")
-            return True
-        else:
-            print(f"❌ Error: Model '{model_name}' is NOT available on Ollama server at {OLLAMA_HOST}.")
-            print(f"🔹 Available models: {', '.join(available_models) if available_models else 'None'}")
-            exit(1)  # Exit with an error status
-    except requests.RequestException as e:
-        print(f"❌ Error: Failed to fetch models from Ollama.")
-        exit(1)  # Exit with an error status
-
-# Perform the connection check before proceeding
 check_ollama_connection()
-verify_ollama_model(MODEL_NAME)
-
-# Print a warning if the user-specified model is different from the default
-if MODEL_NAME != DEFAULT_MODEL:
-    print(f"⚠️ WARNING: You are using a '{MODEL_NAME}' different from the default '{DEFAULT_MODEL}'. Ensure compatibility!")
-
-# Define key bindings for CLI
-bindings = KeyBindings()
-
-@bindings.add('c-c')  # Handle Ctrl+C gracefully
-def _(event):
-    print("\nExiting...")
-    event.app.exit()
 
 # -------------------- Custom Tool: Calculator -------------------- #
 @tool
 def calc(expression: str) -> str:
-    """A simple calculator tool that evaluates arithmetic expressions.
+    """
+    Evaluates an arithmetic expression.
+
     Args:
-        expression: A string containing a mathematical expression (e.g., "2+3*4").
+        expression (str): A mathematical expression (e.g., "2+3*4").
     """
     try:
         result = eval(expression, {"__builtins__": None}, {})
@@ -104,9 +59,11 @@ def calc(expression: str) -> str:
 # -------------------- Custom Tool: Timezone ---------------------- #
 @tool
 def get_current_time_in_timezone(timezone: str) -> str:
-    """A tool that fetches the current local time in a specified timezone.
+    """
+    Retrieves the current time for a specified timezone.
+
     Args:
-        timezone: A string representing a valid timezone (e.g., 'Europe/Amsterdam').
+        timezone (str): The timezone to retrieve the time for (e.g., 'America/New_York').
     """
     try:
         tz = pytz.timezone(timezone)
@@ -116,10 +73,7 @@ def get_current_time_in_timezone(timezone: str) -> str:
         return f"Error fetching time for timezone '{timezone}': {str(e)}"
 
 # -------------------- Ollama API Interaction -------------------- #
-def query_ollama(prompt_text):
-    """
-    Sends a prompt to the Ollama inference server, correctly formatting it for raw mode function calling.
-    """
+def query_ollama(prompt_text, chat_memory):
     OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/generate"
     available_tools = [
         {
@@ -127,13 +81,7 @@ def query_ollama(prompt_text):
             "function": {
                 "name": "calc",
                 "description": "Evaluates a mathematical expression and returns the result.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "expression": {"type": "string", "description": "The arithmetic expression to evaluate"}
-                    },
-                    "required": ["expression"]
-                }
+                "parameters": {"type": "object", "properties": {"expression": {"type": "string", "description": "The arithmetic expression to evaluate"}}, "required": ["expression"]}
             }
         },
         {
@@ -141,112 +89,46 @@ def query_ollama(prompt_text):
             "function": {
                 "name": "get_current_time_in_timezone",
                 "description": "Retrieves the current time in a specified timezone.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "timezone": {"type": "string", "description": "The timezone, e.g., 'Europe/Amsterdam'."}
-                    },
-                    "required": ["timezone"]
-                }
+                "parameters": {"type": "object", "properties": {"timezone": {"type": "string", "description": "The timezone, e.g., 'Europe/Amsterdam'."}}, "required": ["timezone"]}
             }
         }
     ]
 
-    formatted_prompt = f"[AVAILABLE_TOOLS] {json.dumps(available_tools)} [/AVAILABLE_TOOLS]\n[INST] {prompt_text} [/INST]"
+    # Construct memory-aware prompt
+    memory_context = "\n".join(chat_memory[-6:])  # Keep last 6 interactions
+    formatted_prompt = f"[AVAILABLE_TOOLS] {json.dumps(available_tools)} [/AVAILABLE_TOOLS]\n"
+    formatted_prompt += f"[MEMORY] {memory_context} [/MEMORY]\n"
+    formatted_prompt += f"[INST] {prompt_text} [/INST]"
 
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": formatted_prompt,
-        "stream": True,
-        "raw": True  # Enable raw mode for function calling
-    }
+    payload = {"model": MODEL_NAME, "prompt": formatted_prompt, "stream": True, "raw": True}
 
     try:
         with requests.post(OLLAMA_API_URL, json=payload, stream=True) as response:
             response.raise_for_status()
             print(f"\n{MODEL_NAME}: ", end="", flush=True)
-
-            full_response = ""  # Store accumulated response
-            tool_call_detected = False  # Track if a tool call occurs
+            full_response = ""
 
             for line in response.iter_lines():
                 if line:
                     try:
                         data = json.loads(line)
-
-                        # Debug Mode: Print the raw response
                         if DEBUG_MODE:
                             print("\nDEBUG - Raw Response:", json.dumps(data, indent=2), "\n")
-
                         response_text = data.get("response", "")
                         full_response += response_text
-
-                        # If a tool call is detected, process it but DON'T print it as part of LLM response
-                        if "[" in response_text and "{" in response_text:
-                            tool_call_detected = True
-                        elif not tool_call_detected:
-                            print(response_text, end="", flush=True)  # Stream normal LLM output
-
+                        print(response_text, end="", flush=True)
                     except json.JSONDecodeError:
                         continue
 
-            # Extract and process JSON tool calls
-            tool_call_match = re.search(r"\[(\{.*?\})\]", full_response, re.DOTALL)
-            if tool_call_match:
-                tool_calls_json = "[" + tool_call_match.group(1) + "]"
-                try:
-                    tool_calls = json.loads(tool_calls_json)
-
-                    for call in tool_calls:
-                        tool_name = call.get("name")
-                        tool_args = call.get("arguments", {})
-
-                        if tool_name == "get_current_time_in_timezone":
-                            timezone = tool_args.get("timezone", "UTC")
-                            result = get_current_time_in_timezone(timezone)
-                            print("\n" + result, flush=True)  # ✅ Print only tool output
-
-                        elif tool_name == "calc":
-                            expression = tool_args.get("expression", "")
-                            result = calc(expression)
-                            print("\n" + result, flush=True)  # ✅ Print only tool output
-
-                except json.JSONDecodeError:
-                    print("\n⚠️ ERROR: Failed to parse tool calls JSON.\n")
+            chat_memory.append(f"user: {prompt_text}")
+            chat_memory.append(f"assistant: {full_response}")
 
     except requests.RequestException as e:
         print(f"\nError: Unable to reach Ollama server. {e}")
 
-# -------------------- AI Agent Definition -------------------- #
-model = HfApiModel(
-    max_tokens=2096,
-    temperature=0.5,
-    model_id=f"http://{OLLAMA_HOST}",
-    custom_role_conversions=None,
-)
-
-with open("prompts.yaml", "r") as file:
-    prompt_templates = yaml.safe_load(file)
-
-agent = CodeAgent(
-    model=model,
-    tools=[calc, get_current_time_in_timezone],  # Add tools
-    max_steps=6,
-    verbosity_level=1,
-    grammar=None,
-    planning_interval=None,
-    name="CLI_Agent",
-    description="A CLI-based AI agent using Ollama LLM",
-    prompt_templates=prompt_templates,
-)
-
 # -------------------- CLI Main Loop -------------------- #
 def main():
-    """
-    Main interactive CLI loop. Users can enter prompts, edit them, and receive AI responses.
-    """
-    history = InMemoryHistory()  # Store input history
-
+    history = InMemoryHistory()
     print(f"Connected to Ollama at {OLLAMA_HOST}")
     print(f"Using model: {MODEL_NAME}")
     if DEBUG_MODE:
@@ -254,12 +136,15 @@ def main():
     print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
     print("Type 'exit' or 'quit' to end the session.")
 
+    # Conversation memory (keeps track of previous exchanges)
+    chat_memory = []
+
     while True:
         try:
-            user_input = prompt("\nAI> ", history=history, auto_suggest=AutoSuggestFromHistory(), key_bindings=bindings)
+            user_input = prompt("\nAI> ", history=history, auto_suggest=AutoSuggestFromHistory())
             if user_input.lower() in ["exit", "quit"]:
                 break
-            query_ollama(user_input)
+            query_ollama(user_input, chat_memory)
         except (EOFError, KeyboardInterrupt):
             print("\nExiting...")
             break
