@@ -1,0 +1,5 @@
+requests
+pytz
+pyyaml
+prompt_toolkit
+smolagents
