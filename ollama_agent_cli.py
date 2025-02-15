@@ -16,10 +16,14 @@ from prompt_toolkit.key_binding import KeyBindings
 DEFAULT_HOST = os.getenv("OLLAMA_HOST", "localhost:11434")
 DEFAULT_MODEL = os.getenv("MODEL_NAME", "mistral:latest")
 
+# Check environment variables (fallback to hardcoded defaults)
+ENV_HOST = os.getenv("OLLAMA_HOST", DEFAULT_HOST)
+ENV_MODEL = os.getenv("MODEL_NAME", DEFAULT_MODEL)
+
 # Set up argument parsing
 parser = argparse.ArgumentParser(description="Ollama AI Agent CLI - Interact with an AI agent using a local LLM.")
-parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model name to use (default: mistral:latest)")
-parser.add_argument("--host", type=str, default=DEFAULT_HOST, help="Ollama server host (default: 192.168.1.10:11434)")
+parser.add_argument("--model", type=str, default=ENV_MODEL, help=f"Model name to use (default: {ENV_MODEL})")
+parser.add_argument("--host", type=str, default=ENV_HOST, help=f"Ollama server host (default: {ENV_HOST})")
 parser.add_argument("--debug", action="store_true", help="Enable debug mode to print raw responses")
 args = parser.parse_args()
 
@@ -27,15 +31,15 @@ args = parser.parse_args()
 OLLAMA_HOST = args.host
 MODEL_NAME = args.model
 DEBUG_MODE = args.debug
-OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/generate"
 
 # Connection Check: Ensure Ollama server is reachable
 def check_ollama_connection():
     """
     Checks if the Ollama server is reachable before starting.
     """
+    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/tags"
     try:
-        response = requests.get(f"http://{OLLAMA_HOST}/api/tags", timeout=3)
+        response = requests.get(OLLAMA_API_URL, timeout=3)
         response.raise_for_status()
         print("✅ Successfully connected to Ollama server.")
     except requests.RequestException as e:
@@ -43,8 +47,38 @@ def check_ollama_connection():
         print("🔹 Ensure the server is running and reachable.")
         exit(1)  # Exit with an error status
 
+# -------------------- Model Check -------------------- #
+def verify_ollama_model(model_name: str) -> bool:
+    """
+    Verifies if the specified model is available on Ollama.
+    """
+    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/tags"
+    try:
+        response = requests.get(OLLAMA_API_URL, timeout=3)
+        response.raise_for_status()
+        models = response.json().get("models", [])
+
+        # Extract model names from response
+        available_models = [m["name"] for m in models]
+
+        if model_name in available_models:
+            print(f"✅ Model '{model_name}' is available on Ollama server.")
+            return True
+        else:
+            print(f"❌ Error: Model '{model_name}' is NOT available on Ollama server at {OLLAMA_HOST}.")
+            print(f"🔹 Available models: {', '.join(available_models) if available_models else 'None'}")
+            exit(1)  # Exit with an error status
+    except requests.RequestException as e:
+        print(f"❌ Error: Failed to fetch models from Ollama.")
+        exit(1)  # Exit with an error status
+
 # Perform the connection check before proceeding
 check_ollama_connection()
+verify_ollama_model(MODEL_NAME)
+
+# Print a warning if the user-specified model is different from the default
+if MODEL_NAME != DEFAULT_MODEL:
+    print(f"⚠️ WARNING: You are using a '{MODEL_NAME}' different from the default '{DEFAULT_MODEL}'. Ensure compatibility!")
 
 # Define key bindings for CLI
 bindings = KeyBindings()
@@ -86,6 +120,7 @@ def query_ollama(prompt_text):
     """
     Sends a prompt to the Ollama inference server, correctly formatting it for raw mode function calling.
     """
+    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/generate"
     available_tools = [
         {
             "type": "function",
