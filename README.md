@@ -3,7 +3,7 @@
 ![](./images/robot_at_computer_dalle3.jpg "Source: Dall-E 3: Image of a AI robot, typing at a computer")
 
 ## Introduction
-In February 2025 I participated in the Hugging Face AI Agent [course](./images/hugging_face_ai_agent_certificate_Feb_2025.jpg "Hugging Face AI Agent certificate of completion issued to Chris Vitalos February 2025"). Part of the course was a coding challenge to create a Python based AI agent using Hugging Face Spaces. The free virtual CPU provided by Spaces quickly became overloaded, which dramatically slowed down response times.
+In February 2025 I participated in the Hugging Face AI Agent [course](./images/hugging_face_ai_agent_certificate_Feb_2025.jpg "Hugging Face AI Agent certificate of completion issued to Chris Vitalos February 2025"). Part of the course was a coding challenge to create a Python based AI agent using Hugging Face Spaces. The LLM recommended by the course quickly became overloaded by the number of participants trying to use it. The end result was dramatically slowed down response times.
 
 I got quickly frustrated by the lack of progress, and decided to strike out on my own to use locally served LLM via an Ollama inference server, with a CLI to accept the prompts and display the response.
 
@@ -34,10 +34,10 @@ From the command line, run:
 ```
 $ ollama pull mistral:latest
 $ ollama serve
-$ python3 ./ollama_agent_cli.py 
+$ python3 ./ollama_agent_cli.py
 ```
 ## Usage
 
 You will see a command line prompt starting with the characters "AI>"  Here you will prompt the LLM with your queries and see responses.  If you ask the agent the following related queries, it is designed to invoke internal tools to produce the result.
 1. Simple math equations (add, subtract, multiply, divide)
-2. Current time in a city you specify 
+2. Current time in a city you specify
