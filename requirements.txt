@@ -2,4 +2,6 @@ requests
 pytz
 pyyaml
 prompt_toolkit
-smolagents
+llama-index
+llama-index-llms-ollama 
+python-dotenv
