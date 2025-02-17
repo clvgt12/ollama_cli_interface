@@ -3,7 +3,7 @@
 Ollama CLI Agent with JSON Formatted Chat History
 - Maintains conversation context using a JSON list of messages.
 - Each message is a dict with keys "role" and "content".
-- Sends the full conversation as a prompt to the /api/generate endpoint.
+- Sends the full conversation as a prompt to the /api/chat endpoint.
 - Uses prompt_toolkit for an enhanced interactive CLI.
 """
 
@@ -106,15 +106,16 @@ class OllamaClient:
         # Append the user prompt as a JSON object.
         chat_history.append({"role": "user", "content": user_input})
         
-        # Build the full prompt by formatting each message as "Role: Content".
-        full_prompt = json.dumps(chat_history)
-        
         payload = {
             "model": self.model,
-            "prompt": full_prompt,
+            "messages": chat_history,
             "stream": True,
         }
-        url = self._get_url("/api/generate")
+        
+        if self.debug:
+            print(f"\n[DEBUG] Request: {payload}")
+            
+        url = self._get_url("/api/chat")
         full_response = ""
 
         try:
@@ -126,11 +127,11 @@ class OllamaClient:
                     if line:
                         try:
                             data = json.loads(line)
-                            text_piece = data.get("response", "")
+                            text_piece = data["message"]["content"]
                             full_response += text_piece
                             print(text_piece, end="", flush=True)
                             if self.debug:
-                                print(f"\n[DEBUG] Raw data: {data}")
+                                print(f"\n[DEBUG] Response: {data}")
                         except json.JSONDecodeError:
                             continue
                 print("\n")
