@@ -107,9 +107,7 @@ class OllamaClient:
         chat_history.append({"role": "user", "content": user_input})
         
         # Build the full prompt by formatting each message as "Role: Content".
-        full_prompt = "\n".join(
-            f"{msg['role'].capitalize()}: {msg['content']}" for msg in chat_history
-        )
+        full_prompt = json.dumps(chat_history)
         
         payload = {
             "model": self.model,
@@ -167,6 +165,12 @@ def parse_arguments() -> argparse.Namespace:
         help=f"Ollama server host (default: {DEFAULT_HOST})",
     )
     parser.add_argument(
+        "--system",
+        type=str,
+        default="",
+        help="A short system prompt to initialize the conversation context."
+    )
+    parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode to print raw responses"
     )
     return parser.parse_args()
@@ -218,7 +222,11 @@ def main() -> None:
     history = InMemoryHistory()
     # Initialize chat_history as a list of JSON objects with keys "role" and "content".
     chat_history: List[Dict[str, str]] = []
-
+    
+    # Add the system prompt as the first message if provided.
+    if args.system:
+        chat_history.append({"role": "system", "content": args.system})
+        
     while True:
         try:
             user_input = prompt(
