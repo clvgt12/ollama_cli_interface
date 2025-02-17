@@ -1,6 +1,6 @@
 # Ollama Agent CLI tool
 
-![](./images/robot_at_computer_dalle3.jpg "Source: Dall-E 3: Image of a AI robot, typing at a computer")
+![Llama Shepherd](./images/robot-shepherd-flock-of-llamas.jpg "Source: Dall-E 3: Image of a AI robot, typing at a computer")
 
 ## Introduction
 In February 2025 I participated in the Hugging Face AI Agent [course](./images/hugging_face_ai_agent_certificate_Feb_2025.jpg "Hugging Face AI Agent certificate of completion issued to Chris Vitalos February 2025"). Part of the course was a coding challenge to create a Python based AI agent using Hugging Face Spaces. The LLM recommended by the course quickly became overloaded by the number of participants trying to use it. The end result was dramatically slowed down response times.
