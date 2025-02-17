@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Ollama CLI Agent with Chat History Concatenation
-- Maintains conversation context by concatenating chat history.
-- Sends the full conversation as a prompt to the /api/generate endpoint.
+Ollama CLI Agent with JSON Formatted Chat History
+- Maintains conversation context using a JSON list of messages.
+- Each message is a dict with keys "role" and "content".
+- Sends the full conversation as a prompt to the /api/chat endpoint.
 - Uses prompt_toolkit for an enhanced interactive CLI.
 """
 
@@ -10,185 +11,238 @@ import argparse
 import requests
 import json
 import os
+import sys
+from typing import List, Dict
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
 
-# Default values
+# Default values from environment variables or hardcoded defaults
 DEFAULT_HOST = os.getenv("OLLAMA_HOST", "localhost:11434")
 DEFAULT_MODEL = os.getenv("MODEL_NAME", "mistral:latest")
 
-# Check environment variables (fallback to hardcoded defaults)
-ENV_HOST = os.getenv("OLLAMA_HOST", DEFAULT_HOST)
-ENV_MODEL = os.getenv("MODEL_NAME", DEFAULT_MODEL)
 
-# Set up argument parsing
-parser = argparse.ArgumentParser(
-    description="Ollama AI Agent CLI - Interact with an AI agent using a local LLM."
-)
-parser.add_argument(
-    "--model",
-    type=str,
-    default=ENV_MODEL,
-    help=f"Model name to use (default: {ENV_MODEL})",
-)
-parser.add_argument(
-    "--host",
-    type=str,
-    default=ENV_HOST,
-    help=f"Ollama server host (default: {ENV_HOST})",
-)
-parser.add_argument(
-    "--debug", action="store_true", help="Enable debug mode to print raw responses"
-)
-args = parser.parse_args()
-
-# Assign parsed arguments
-OLLAMA_HOST = args.host
-MODEL_NAME = args.model
-DEBUG_MODE = args.debug
-
-# Connection Check: Ensure Ollama server is reachable
-def check_ollama_connection():
+class OllamaClient:
     """
-    Checks if the Ollama server is reachable before starting.
+    Client for interacting with the Ollama server.
     """
-    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/tags"
-    try:
-        response = requests.get(OLLAMA_API_URL, timeout=3)
-        response.raise_for_status()
-        print("✅ Successfully connected to Ollama server.")
-    except requests.RequestException as e:
-        print(f"❌ Error: Unable to reach Ollama server at {OLLAMA_HOST}.")
-        print("🔹 Ensure the server is running and reachable.")
-        exit(1)
+    def __init__(self, host: str, model: str, debug: bool = False):
+        """
+        Initialize the Ollama client with server host, model, and debug flag.
 
-# -------------------- Model Check -------------------- #
-def verify_ollama_model(model_name: str) -> bool:
+        Parameters:
+            host (str): The Ollama server host.
+            model (str): The model name to use.
+            debug (bool): Flag to enable debug mode.
+        """
+        self.host = host
+        self.model = model
+        self.debug = debug
+        self.base_url = f"http://{self.host}"
+
+    def _get_url(self, endpoint: str) -> str:
+        """
+        Build the full URL for a given API endpoint.
+
+        Parameters:
+            endpoint (str): The API endpoint (e.g., '/api/tags').
+
+        Returns:
+            str: The full URL.
+        """
+        return f"{self.base_url}{endpoint}"
+
+    def check_connection(self) -> None:
+        """
+        Checks if the Ollama server is reachable.
+        """
+        url = self._get_url("/api/tags")
+        try:
+            response = requests.get(url, timeout=3)
+            response.raise_for_status()
+            print("✅ Successfully connected to Ollama server.")
+        except requests.RequestException as e:
+            print(f"❌ Error: Unable to reach Ollama server at {self.host}.")
+            print("🔹 Ensure the server is running and reachable.")
+            sys.exit(1)
+
+    def verify_model(self) -> None:
+        """
+        Verifies if the specified model is available on the Ollama server.
+        """
+        url = self._get_url("/api/tags")
+        try:
+            response = requests.get(url, timeout=3)
+            response.raise_for_status()
+            models = response.json().get("models", [])
+            available_models = [m["name"] for m in models]
+            if self.model not in available_models:
+                print(
+                    f"❌ Error: Model '{self.model}' is not available on the Ollama server at {self.host}."
+                )
+                print(
+                    f"🔹 Available models: {', '.join(available_models) if available_models else 'None'}"
+                )
+                sys.exit(1)
+            print(f"✅ Model '{self.model}' is available on Ollama server.")
+        except requests.RequestException:
+            print("❌ Error: Failed to fetch models from Ollama.")
+            sys.exit(1)
+
+    def query(self, user_input: str, chat_history: List[Dict[str, str]]) -> str:
+        """
+        Sends a prompt to the Ollama server by concatenating the JSON formatted chat history
+        and the current user input.
+
+        Parameters:
+            user_input (str): The latest user prompt.
+            chat_history (List[Dict[str, str]]): Conversation history, where each message is a dict
+                                                 with keys "role" and "content".
+
+        Returns:
+            str: The assistant's complete response.
+        """
+        # Append the user prompt as a JSON object.
+        chat_history.append({"role": "user", "content": user_input})
+        
+        payload = {
+            "model": self.model,
+            "messages": chat_history,
+            "stream": True,
+        }
+        
+        if self.debug:
+            print(f"\n[DEBUG] Request: {payload}")
+            
+        url = self._get_url("/api/chat")
+        full_response = ""
+
+        try:
+            with requests.post(url, json=payload, stream=True) as response:
+                response.raise_for_status()
+                print(f"{self.model}> ", end="", flush=True)
+                # Process streamed response chunks.
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            text_piece = data["message"]["content"]
+                            full_response += text_piece
+                            print(text_piece, end="", flush=True)
+                            if self.debug:
+                                print(f"\n[DEBUG] Response: {data}")
+                        except json.JSONDecodeError:
+                            continue
+                print("\n")
+                # Append the assistant's response as a JSON object.
+                chat_history.append({"role": "assistant", "content": full_response})
+                return full_response
+        except requests.RequestException as e:
+            print(f"\nError: Unable to reach Ollama server. {e}")
+            return ""
+
+
+def parse_arguments() -> argparse.Namespace:
     """
-    Verifies if the specified model is available on Ollama.
-    """
-    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/tags"
-    try:
-        response = requests.get(OLLAMA_API_URL, timeout=3)
-        response.raise_for_status()
-        models = response.json().get("models", [])
-        available_models = [m["name"] for m in models]
-
-        if model_name in available_models:
-            print(f"✅ Model '{model_name}' is available on Ollama server.")
-            return True
-        else:
-            print(
-                f"❌ Error: Model '{model_name}' is NOT available on Ollama server at {OLLAMA_HOST}."
-            )
-            print(
-                f"🔹 Available models: {', '.join(available_models) if available_models else 'None'}"
-            )
-            exit(1)
-    except requests.RequestException as e:
-        print("❌ Error: Failed to fetch models from Ollama.")
-        exit(1)
-
-# Perform the connection check before proceeding
-check_ollama_connection()
-verify_ollama_model(MODEL_NAME)
-
-# Print a warning if the user-specified model is different from the default
-if MODEL_NAME != DEFAULT_MODEL:
-    print(
-        f"⚠️ WARNING: You are using the model '{MODEL_NAME}' which is different from the default model '{DEFAULT_MODEL}'"
-    )
-
-# Define key bindings for CLI
-bindings = KeyBindings()
-
-@bindings.add("c-c")  # Handle Ctrl+C gracefully
-def _(event):
-    print("\nExiting...")
-    event.app.exit()
-
-# -------------------- Ollama API Interaction with Concatenated Chat History -------------------- #
-def query_ollama(user_input, chat_history):
-    """
-    Sends a prompt to the Ollama inference server by concatenating chat history and the current user input.
-
-    Parameters:
-      user_input (str): The latest user prompt.
-      chat_history (list): List containing the conversation history.
-                         Each entry is a string prefixed with 'User:' or 'Assistant:'.
+    Parses command-line arguments.
 
     Returns:
-      str: The complete assistant response.
+        argparse.Namespace: The parsed arguments.
     """
-    # Append the new user prompt to the chat history with a role indicator.
-    chat_history.append(f"User: {user_input}")
+    parser = argparse.ArgumentParser(
+        description="Ollama AI Agent CLI - Interact with an AI agent using a local LLM."
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=DEFAULT_MODEL,
+        help=f"Model name to use (default: {DEFAULT_MODEL})",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=DEFAULT_HOST,
+        help=f"Ollama server host (default: {DEFAULT_HOST})",
+    )
+    parser.add_argument(
+        "--system",
+        type=str,
+        default="",
+        help="A short system prompt to initialize the conversation context."
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode to print raw responses"
+    )
+    return parser.parse_args()
 
-    # Concatenate the entire chat history into a single prompt.
-    full_prompt = "\n".join(chat_history)
 
-    # Prepare the payload for the /api/generate endpoint.
-    OLLAMA_API_URL = f"http://{OLLAMA_HOST}/api/generate"
-    payload = {
-        "model": MODEL_NAME,
-        "prompt": full_prompt,
-        "stream": True,
-    }
-
-    try:
-        with requests.post(OLLAMA_API_URL, json=payload, stream=True) as response:
-            response.raise_for_status()
-            print(f"{MODEL_NAME}> ", end="", flush=True)
-            full_response = ""
-
-            # Process streamed response chunks.
-            for line in response.iter_lines():
-                if line:
-                    try:
-                        data = json.loads(line)
-                        text_piece = data.get("response", "")
-                        full_response += text_piece
-                        print(text_piece, end="", flush=True)
-                    except json.JSONDecodeError:
-                        continue
-            print("\n")
-
-            # Append the assistant's response to the chat history.
-            chat_history.append(f"Assistant: {full_response}")
-
-            return full_response
-    except requests.RequestException as e:
-        print(f"\nError: Unable to reach Ollama server. {e}")
-        return ""
-
-# -------------------- CLI Main Loop -------------------- #
-def main():
+def setup_key_bindings() -> KeyBindings:
     """
-    Main interactive CLI loop. Users can enter prompts, edit them, and receive AI responses.
-    The conversation history is concatenated and sent with each API call.
-    """
-    history = InMemoryHistory()  # Store input history
-    chat_history = []            # Maintains the full conversation context
+    Sets up key bindings for the CLI interface.
 
-    print(f"Connected to Ollama at {OLLAMA_HOST}")
-    print(f"Using model: {MODEL_NAME}")
-    if DEBUG_MODE:
+    Returns:
+        KeyBindings: The configured key bindings.
+    """
+    bindings = KeyBindings()
+
+    @bindings.add("c-c")
+    def _(event):
+        print("\nExiting...")
+        event.app.exit()
+
+    return bindings
+
+
+def main() -> None:
+    """
+    Main interactive CLI loop. Users can enter prompts and receive AI responses.
+    The conversation history is maintained as a JSON list of messages and sent with each API call.
+    """
+    args = parse_arguments()
+    client = OllamaClient(host=args.host, model=args.model, debug=args.debug)
+
+    # Verify connection and model availability.
+    client.check_connection()
+    client.verify_model()
+
+    # Warn if using a non-default model.
+    if args.model != DEFAULT_MODEL:
+        print(
+            f"⚠️ WARNING: Using model '{args.model}' which is different from default '{DEFAULT_MODEL}'"
+        )
+
+    print(f"Connected to Ollama at {client.host}")
+    print(f"Using model: {client.model}")
+    if client.debug:
         print("🔍 Debug mode enabled - Printing raw responses")
     print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
     print("Type 'exit' or 'quit' to end the session.")
 
+    bindings = setup_key_bindings()
+    history = InMemoryHistory()
+    # Initialize chat_history as a list of JSON objects with keys "role" and "content".
+    chat_history: List[Dict[str, str]] = []
+    
+    # Add the system prompt as the first message if provided.
+    if args.system:
+        chat_history.append({"role": "system", "content": args.system})
+        
     while True:
         try:
             user_input = prompt(
-                "\nYour query?> ", history=history, auto_suggest=AutoSuggestFromHistory(), key_bindings=bindings
+                "\nYour query?> ",
+                history=history,
+                auto_suggest=AutoSuggestFromHistory(),
+                key_bindings=bindings,
             )
             if user_input.lower() in ["exit", "quit"]:
                 break
-            query_ollama(user_input, chat_history)
+            client.query(user_input, chat_history)
         except (EOFError, KeyboardInterrupt):
             print("\nExiting...")
             break
+
 
 if __name__ == "__main__":
     main()
