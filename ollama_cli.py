@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Ollama CLI Agent with JSON Formatted Chat History
-- Maintains conversation context using a JSON list of messages.
-- Each message is a dict with keys "role" and "content".
-- Sends the full conversation as a prompt to the /api/chat endpoint.
-- Uses prompt_toolkit for an enhanced interactive CLI.
+Ollama CLI Agent with YAML-Imported JSON Chat History Encapsulated in OllamaChat
+- Loads an initial conversation payload from a YAML file (if specified).
+- If the file cannot be loaded, creates an empty payload and optionally adds a system prompt.
+- Sends the complete payload to the /api/chat endpoint and updates it with responses.
+- Uses prompt_toolkit for an enhanced CLI experience.
 """
 
 import argparse
@@ -12,13 +12,14 @@ import requests
 import json
 import os
 import sys
-from typing import List, Dict
+import yaml  # Used for YAML file parsing
+from typing import List, Dict, Optional
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
 
-# Default values from environment variables or hardcoded defaults
+# Default values from environment variables or hardcoded defaults.
 DEFAULT_HOST = os.getenv("OLLAMA_HOST", "localhost:11434")
 DEFAULT_MODEL = os.getenv("MODEL_NAME", "mistral:latest")
 
@@ -26,6 +27,7 @@ DEFAULT_MODEL = os.getenv("MODEL_NAME", "mistral:latest")
 class OllamaClient:
     """
     Client for interacting with the Ollama server.
+    Responsible only for making API calls.
     """
     def __init__(self, host: str, model: str, debug: bool = False):
         """
@@ -90,39 +92,24 @@ class OllamaClient:
             print("❌ Error: Failed to fetch models from Ollama.")
             sys.exit(1)
 
-    def query(self, user_input: str, chat_history: List[Dict[str, str]]) -> str:
+    def send_payload(self, payload: dict) -> str:
         """
-        Sends a prompt to the Ollama server by concatenating the JSON formatted chat history
-        and the current user input.
+        Sends the entire conversation payload to the /api/chat endpoint.
 
         Parameters:
-            user_input (str): The latest user prompt.
-            chat_history (List[Dict[str, str]]): Conversation history, where each message is a dict
-                                                 with keys "role" and "content".
+            payload (dict): The complete conversation payload.
 
         Returns:
             str: The assistant's complete response.
         """
-        # Append the user prompt as a JSON object.
-        chat_history.append({"role": "user", "content": user_input})
-        
-        payload = {
-            "model": self.model,
-            "messages": chat_history,
-            "stream": True,
-        }
-        
         if self.debug:
-            print(f"\n[DEBUG] Request: {payload}")
-            
+            print(f"\n[DEBUG] Request payload: {payload}")
         url = self._get_url("/api/chat")
         full_response = ""
-
         try:
             with requests.post(url, json=payload, stream=True) as response:
                 response.raise_for_status()
                 print(f"{self.model}> ", end="", flush=True)
-                # Process streamed response chunks.
                 for line in response.iter_lines():
                     if line:
                         try:
@@ -135,12 +122,110 @@ class OllamaClient:
                         except json.JSONDecodeError:
                             continue
                 print("\n")
-                # Append the assistant's response as a JSON object.
-                chat_history.append({"role": "assistant", "content": full_response})
                 return full_response
         except requests.RequestException as e:
             print(f"\nError: Unable to reach Ollama server. {e}")
             return ""
+
+
+class OllamaChat:
+    """
+    Encapsulates the chat conversation with the Ollama server.
+    Manages the conversation payload and provides an interactive CLI.
+    """
+    def __init__(self, client: OllamaClient, prompts_file: Optional[str], system_prompt: str):
+        """
+        Initialize the OllamaChat session by loading an initial payload.
+
+        Parameters:
+            client (OllamaClient): The client used to communicate with the server.
+            prompts_file (Optional[str]): Path to the YAML file with the initial payload.
+            system_prompt (str): A system prompt to initialize conversation context.
+        """
+        self.client = client
+        self.payload = self._load_payload(prompts_file, system_prompt)
+
+    def _load_payload(self, prompts_file: Optional[str], system_prompt: str) -> dict:
+        """
+        Load the payload from a YAML file or initialize an empty payload.
+
+        Parameters:
+            prompts_file (Optional[str]): YAML file path.
+            system_prompt (str): System prompt for initialization.
+
+        Returns:
+            dict: The conversation payload.
+        """
+        file_to_load = prompts_file if prompts_file else "prompts.yaml"
+        try:
+            with open(file_to_load, "r") as f:
+                payload = yaml.safe_load(f)
+                if payload is None:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    print(f"Warning: '{file_to_load}' does not contain a valid dictionary. Using empty payload.")
+                    payload = {}
+        except Exception as e:
+            print(f"Warning: Could not load prompts file '{file_to_load}': {e}. Creating empty payload.")
+            payload = {}
+
+        if "model" not in payload:
+            payload["model"] = self.client.model
+        if "messages" not in payload or not isinstance(payload["messages"], list):
+            payload["messages"] = []
+        if system_prompt and not payload["messages"]:
+            payload["messages"].append({"role": "system", "content": system_prompt})
+        if "stream" not in payload:
+            payload["stream"] = True
+        return payload
+
+    def run(self) -> None:
+        """
+        Runs the interactive chat loop, allowing users to send prompts and receive responses.
+        """
+        bindings = self._setup_key_bindings()
+        history = InMemoryHistory()
+
+        print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
+        print("Type 'exit' or 'quit' to end the session.")
+
+        while True:
+            try:
+                user_input = prompt(
+                    "\nYour query?> ",
+                    history=history,
+                    auto_suggest=AutoSuggestFromHistory(),
+                    key_bindings=bindings,
+                )
+                if user_input.lower() in ["exit", "quit"]:
+                    break
+
+                # Update the payload with the user's message.
+                self.payload["messages"].append({"role": "user", "content": user_input})
+                # Send the updated payload to the API.
+                assistant_response = self.client.send_payload(self.payload)
+                # Update the payload with the assistant's response.
+                self.payload["messages"].append({"role": "assistant", "content": assistant_response})
+
+            except (EOFError, KeyboardInterrupt):
+                print("\nExiting...")
+                break
+
+    def _setup_key_bindings(self) -> KeyBindings:
+        """
+        Sets up key bindings for the CLI interface.
+
+        Returns:
+            KeyBindings: The configured key bindings.
+        """
+        bindings = KeyBindings()
+
+        @bindings.add("c-c")
+        def _(event):
+            print("\nExiting...")
+            event.app.exit()
+
+        return bindings
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -172,32 +257,20 @@ def parse_arguments() -> argparse.Namespace:
         help="A short system prompt to initialize the conversation context."
     )
     parser.add_argument(
+        "--prompts",
+        type=str,
+        default=None,
+        help="YAML file containing initial conversation context (default: prompts.yaml in current directory if exists)"
+    )
+    parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode to print raw responses"
     )
     return parser.parse_args()
 
 
-def setup_key_bindings() -> KeyBindings:
-    """
-    Sets up key bindings for the CLI interface.
-
-    Returns:
-        KeyBindings: The configured key bindings.
-    """
-    bindings = KeyBindings()
-
-    @bindings.add("c-c")
-    def _(event):
-        print("\nExiting...")
-        event.app.exit()
-
-    return bindings
-
-
 def main() -> None:
     """
-    Main interactive CLI loop. Users can enter prompts and receive AI responses.
-    The conversation history is maintained as a JSON list of messages and sent with each API call.
+    Main entry point for the interactive CLI session.
     """
     args = parse_arguments()
     client = OllamaClient(host=args.host, model=args.model, debug=args.debug)
@@ -206,7 +279,6 @@ def main() -> None:
     client.check_connection()
     client.verify_model()
 
-    # Warn if using a non-default model.
     if args.model != DEFAULT_MODEL:
         print(
             f"⚠️ WARNING: Using model '{args.model}' which is different from default '{DEFAULT_MODEL}'"
@@ -216,32 +288,10 @@ def main() -> None:
     print(f"Using model: {client.model}")
     if client.debug:
         print("🔍 Debug mode enabled - Printing raw responses")
-    print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
-    print("Type 'exit' or 'quit' to end the session.")
 
-    bindings = setup_key_bindings()
-    history = InMemoryHistory()
-    # Initialize chat_history as a list of JSON objects with keys "role" and "content".
-    chat_history: List[Dict[str, str]] = []
-    
-    # Add the system prompt as the first message if provided.
-    if args.system:
-        chat_history.append({"role": "system", "content": args.system})
-        
-    while True:
-        try:
-            user_input = prompt(
-                "\nYour query?> ",
-                history=history,
-                auto_suggest=AutoSuggestFromHistory(),
-                key_bindings=bindings,
-            )
-            if user_input.lower() in ["exit", "quit"]:
-                break
-            client.query(user_input, chat_history)
-        except (EOFError, KeyboardInterrupt):
-            print("\nExiting...")
-            break
+    # Instantiate OllamaChat with the client, prompts file, and system prompt.
+    chat_session = OllamaChat(client, args.prompts, args.system)
+    chat_session.run()
 
 
 if __name__ == "__main__":

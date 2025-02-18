@@ -1,7 +1,5 @@
 requests
 pytz
-pyyaml
-prompt_toolkit
-llama-index
-llama-index-llms-ollama 
+PyYAML
+prompt_toolkit 
 python-dotenv
