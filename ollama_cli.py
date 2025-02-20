@@ -241,12 +241,16 @@ class OllamaClient:
                             data = json.loads(line)
                             text_piece = data["message"]["content"]
                             full_response += text_piece
+                            if self.debug:
+                                print(f"\n[DEBUG] text_piece: {text_piece}")
                             print(text_piece, end="", flush=True)
                             if self.debug:
                                 print(f"\n[DEBUG] Response: {data}")
                         except json.JSONDecodeError:
                             continue
                 print("\n")
+                if self.debug:
+                    print(f"\n[DEBUG] Full_Response: {full_response}")
                 return full_response
         except requests.RequestException as e:
             print(f"\nError: Unable to reach Ollama server. {e}")
@@ -372,9 +376,14 @@ class OllamaChat:
         # Try to extract and process a tool call from the assistant's response
         try:
             data = json.loads(assistant_response)
+            print(f"[DEBUG]: assistant_response={assistant_response}")
             message = data.get("message", {})
+            if self.client.debug:
+                print(f"[DEBUG]: message={message}")
             # Check for explicit tool_calls list first
             if "tool_calls" in message and isinstance(message["tool_calls"], list) and message["tool_calls"]:
+                if self.client.debug:
+                    print(f"[DEBUG]: tool_calls={message["tool_calls"]}")
                 return self._execute_tool_call(message["tool_calls"][0])
             # Otherwise, try to extract a tool call from the text
             json_substring = extract_json_from_text(message.get("content", ""))
@@ -413,6 +422,7 @@ class OllamaChat:
                 self.payload["messages"].append({"role": "user", "content": user_input})
                 # Send payload to the API.
                 assistant_response = self.client.send_payload(self.payload)
+                print(f"[DEBUG]: assistant_response={assistant_response}")
                 # Process assistant response for potential tool calls.
                 processed_response = self.process_assistant_response(assistant_response)
                 # Append assistant (or tool) response.
