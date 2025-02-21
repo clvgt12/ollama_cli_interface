@@ -85,11 +85,11 @@ def execute_tool_function(tool_call: dict):
     try:
         # Execute the tool function with the provided arguments.
         # NOTE: We use json.dumps() to serialize the result to a JSON string if needed.
-        result = {"tool": function_name, "content": tool_function(**function_args)}
+        result = {"role": "tool", "content": tool_function(**function_args)}
         return result
     except Exception as e:
         logging.error("Error executing tool '%s': %s", function_name, e)
-        result = {"tool": function_name, "content": f"Error executing tool: {e}"}
+        result = {"role": "tool", "content": f"Error executing tool: {e}"}
         return result
 
 # --------------------------
@@ -248,23 +248,21 @@ class OllamaClient:
         Parameters:
             data (dict): The complete response.
         Returns:
-            str: The assistant's complete response.
+            tool_msgs(list of dict): A list of tool messages results from successive tool function calls
         """
+        # Create an empty list to accumulate tool_msgs when processing the array tool_calls
+        tool_msgs = []
         # Retrieve the 'message' sub-dictionary; use an empty dict if not present
         message = data.get("message", {})
-        if self.debug:
-            print(f"[DEBUG OllamaClient]: data:{data}, message:{message}")
         # Retrieve the 'tool_calls' array if it exists; otherwise, set to None
         tool_calls = message.get("tool_calls",{})
-        if self.debug:
-            print(f"[DEBUG OllamaClient]: tool_calls:{tool_calls}")
         if(tool_calls is not None):
             for tool_call in tool_calls:
                 # Process assistant response for potential tool calls.
-                tool_msg = execute_tool_function(tool_call)
+                tool_msgs.append(execute_tool_function(tool_call)) 
                 if self.debug:
-                    print(f"[DEBUG OllamaClient]: tool_msg:{tool_msg}")
-                return tool_msg
+                    print(f"[DEBUG OllamaClient]: tool_msgs:{tool_msgs}")
+        return tool_msgs
 
     def send_payload(self, payload: dict) -> str:
         """
@@ -272,12 +270,13 @@ class OllamaClient:
         Parameters:
             payload (dict): The complete conversation payload.
         Returns:
-            str: The assistant's complete response.
+            messages (list of dict): The assistant's messages to be preserved in payload messages for chat memory.
         """
         if self.debug:
             print(f"\n[DEBUG OllamaClient] Request payload: {payload}")
         url = self._get_url("/api/chat")
-        full_response = ""
+        full_text = ""
+        messages = []
         try:
             with requests.post(url, json=payload, stream=True) as response:
                 response.raise_for_status()
@@ -287,18 +286,23 @@ class OllamaClient:
                         try:
                             data = json.loads(line)
                             text_piece = data["message"]["content"]
-                            full_response += text_piece
+                            full_text += text_piece
                             print(text_piece, end="", flush=True)
                             tool_response = self._process_tool_calls(data)
+                            if tool_response is not None:
+                                for t in tool_response:
+                                    messages.append(t)
                             if self.debug:
                                 print(f"\n[DEBUG OllamaClient] Response: {data}, tool_response: {tool_response}")
                         except json.JSONDecodeError:
                             continue
                 print("\n")
-                return data
+                if full_text is not None:
+                    messages.append({"role": "assistant", "content": full_text})
+                return messages
         except requests.RequestException as e:
             print(f"\nError: Unable to reach Ollama server. {e}")
-            return ""
+            return []
 
 class OllamaChat:
     """
@@ -382,17 +386,13 @@ class OllamaChat:
                 # Append user's message.
                 self.payload["messages"].append({"role": "user", "content": user_input})
                 # Send payload to the API.
-                response = self.client.send_payload(self.payload)
-
-                # Retrieve the 'message' sub-dictionary; use an empty dict if not present
-                message = response.get("message", {})
-                # Create the simplified assistant message object
-                assistant_msg = {
-                    "role": message.get("role", ""),
-                    "content": message.get("content", "")
-                }
-                # Append assistant message.
-                self.payload["messages"].append(json.dumps(assistant_msg))
+                messages = self.client.send_payload(self.payload)
+                # Append assistant messages to payload messages to maintain chat memory.
+                for m in messages:
+                    self.payload["messages"].append(m)
+                if self.debug:
+                    print(f"[DEBUG OllamaChat]: messages: {messages}")
+                    print(f"[DEBUG OllamaChat]: payload: {self.payload}")
 
             except (EOFError, KeyboardInterrupt):
                 print("\nExiting...")
