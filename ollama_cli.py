@@ -242,6 +242,42 @@ class OllamaClient:
             print("❌ Error: Failed to fetch models from Ollama.")
             sys.exit(1)
 
+    def _copy_tool_content_to_assistant(self, messages: str) -> str:
+        """
+        Copies the 'content' from the 'tool' role message to the 'assistant' role message.
+
+        Args:
+            messages: A list of dictionaries, where each dictionary represents a message 
+                    with 'role' and 'content' keys.
+
+        Returns:
+            A new list of dictionaries with the 'content' of the 'assistant' message 
+            updated, or the original list if no 'tool' message is found before the 
+            'assistant' message.  Returns the original list if the structure is not 
+            as expected.
+        """
+
+        if not isinstance(messages, list):
+            return messages  # Handle unexpected input
+
+        tool_content = None
+        assistant_index = -1
+
+        for i, message in enumerate(messages):
+            if not isinstance(message, dict) or 'role' not in message or 'content' not in message:
+                return messages # unexpected message structure
+
+            if message['role'] == 'tool':
+                tool_content = message['content']
+            elif message['role'] == 'assistant':
+                assistant_index = i
+                break  # Found the assistant message, no need to continue
+
+        if tool_content is not None and assistant_index != -1:
+            messages[assistant_index]['content'] = tool_content
+
+        return messages
+
     def _process_tool_calls(self, data: dict) -> str:
         """
         Slogan: Processes tool_calls object and calls functions.
@@ -289,11 +325,12 @@ class OllamaClient:
                             full_text += text_piece
                             print(text_piece, end="", flush=True)
                             tool_response = self._process_tool_calls(data)
+                            if self.debug:
+                                print(f"[DEBUG OllamaClient] Response: {data}")
+                                print(f"[DEBUG OllamaClient] tool_response: {tool_response}")
                             if tool_response is not None:
                                 for t in tool_response:
                                     messages.append(t)
-                            if self.debug:
-                                print(f"\n[DEBUG OllamaClient] Response: {data}, tool_response: {tool_response}")
                         except json.JSONDecodeError:
                             continue
                 print("\n")
@@ -383,16 +420,23 @@ class OllamaChat:
                 if user_input.lower() in ["exit", "quit"]:
                     break
 
-                # Append user's message.
-                self.payload["messages"].append({"role": "user", "content": user_input})
-                # Send payload to the API.
-                messages = self.client.send_payload(self.payload)
-                # Append assistant messages to payload messages to maintain chat memory.
-                for m in messages:
-                    self.payload["messages"].append(m)
-                if self.debug:
-                    print(f"[DEBUG OllamaChat]: messages: {messages}")
-                    print(f"[DEBUG OllamaChat]: payload: {self.payload}")
+                def send_payload(user_input:str) -> None:
+                    # Append user's message.
+                    if(user_input != ''):
+                        self.payload["messages"].append({"role": "user", "content": user_input})
+                    # Send payload to the API.
+                    messages = self.client.send_payload(self.payload)
+                    if self.debug:
+                        print(f"[DEBUG OllamaChat]: payload: {self.payload}")
+                        print(f"[DEBUG OllamaChat]: messages: {messages}")
+                    # Append assistant messages to payload messages to maintain chat memory.
+                    for m in messages:
+                        if m['content'] != '':   # Filter out messages that have null content!
+                            self.payload["messages"].append(m)
+                        if m['role'] == 'tool':
+                            send_payload('')
+
+                send_payload(user_input)
 
             except (EOFError, KeyboardInterrupt):
                 print("\nExiting...")
