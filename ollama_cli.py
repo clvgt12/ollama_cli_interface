@@ -50,24 +50,47 @@ def register_tool(name):
 
 def execute_tool_function(tool_call: dict):
     """
-    Slogan: Executes a tool function based on the provided tool call.
+    Executes a tool function based on the provided tool call.
+    
+    This function extracts the tool function's name and its arguments from the
+    provided dictionary under the "function" key. It then retrieves the corresponding
+    function from the TOOL_REGISTRY and executes it with the given arguments.
+    
     Parameters:
-        tool_call (dict): Contains keys "tool" (str) and "args" (dict).
+        tool_call (dict): A dictionary containing a "function" key. The associated value 
+                          should be a dictionary with:
+                              - "name" (str): The name of the tool function to execute.
+                              - "arguments" (dict): A dictionary of arguments for the tool function.
+    
     Returns:
-        Any: The result of executing the tool function.
+        dict: A JSON-like dictionary with the following keys:
+                - "tool": (str) The name of the executed tool function.
+                - "content": (Any) The result of executing the tool function. In case of an error,
+                             this will contain an error message.
     """
-    tool_name = tool_call.get("tool")
-    args = tool_call.get("args", {})
-    tool_func = TOOL_REGISTRY.get(tool_name)
-    if not tool_func:
-        error_msg = f"Tool '{tool_name}' is not registered."
+    # Retrieve the 'function' sub-dictionary
+    function_data = tool_call.get("function", {})
+    
+    # Extract the function's name and arguments
+    function_name = function_data.get("name", "")
+    function_args = function_data.get("arguments", {})
+
+    # Retrieve the tool function from the registry
+    tool_function = TOOL_REGISTRY.get(function_name)
+    if not tool_function:
+        error_msg = f"Tool '{function_name}' is not registered."
         logging.error(error_msg)
         raise ValueError(error_msg)
+    
     try:
-        return tool_func(**args)
+        # Execute the tool function with the provided arguments.
+        # NOTE: We use json.dumps() to serialize the result to a JSON string if needed.
+        result = {"tool": function_name, "content": tool_function(**function_args)}
+        return result
     except Exception as e:
-        logging.error("Error executing tool '%s': %s", tool_name, e)
-        return f"Error executing tool '{tool_name}': {e}"
+        logging.error("Error executing tool '%s': %s", function_name, e)
+        result = {"tool": function_name, "content": f"Error executing tool: {e}"}
+        return result
 
 # --------------------------
 # Sample Tool Implementation
@@ -219,6 +242,30 @@ class OllamaClient:
             print("❌ Error: Failed to fetch models from Ollama.")
             sys.exit(1)
 
+    def _process_tool_calls(self, data: dict) -> str:
+        """
+        Slogan: Processes tool_calls object and calls functions.
+        Parameters:
+            data (dict): The complete response.
+        Returns:
+            str: The assistant's complete response.
+        """
+        # Retrieve the 'message' sub-dictionary; use an empty dict if not present
+        message = data.get("message", {})
+        if self.debug:
+            print(f"[DEBUG OllamaClient]: data:{data}, message:{message}")
+        # Retrieve the 'tool_calls' array if it exists; otherwise, set to None
+        tool_calls = message.get("tool_calls",{})
+        if self.debug:
+            print(f"[DEBUG OllamaClient]: tool_calls:{tool_calls}")
+        if(tool_calls is not None):
+            for tool_call in tool_calls:
+                # Process assistant response for potential tool calls.
+                tool_msg = execute_tool_function(tool_call)
+                if self.debug:
+                    print(f"[DEBUG OllamaClient]: tool_msg:{tool_msg}")
+                return tool_msg
+
     def send_payload(self, payload: dict) -> str:
         """
         Slogan: Sends the conversation payload to the /api/chat endpoint.
@@ -228,7 +275,7 @@ class OllamaClient:
             str: The assistant's complete response.
         """
         if self.debug:
-            print(f"\n[DEBUG] Request payload: {payload}")
+            print(f"\n[DEBUG OllamaClient] Request payload: {payload}")
         url = self._get_url("/api/chat")
         full_response = ""
         try:
@@ -241,17 +288,14 @@ class OllamaClient:
                             data = json.loads(line)
                             text_piece = data["message"]["content"]
                             full_response += text_piece
-                            if self.debug:
-                                print(f"\n[DEBUG] text_piece: {text_piece}")
                             print(text_piece, end="", flush=True)
+                            tool_response = self._process_tool_calls(data)
                             if self.debug:
-                                print(f"\n[DEBUG] Response: {data}")
+                                print(f"\n[DEBUG OllamaClient] Response: {data}, tool_response: {tool_response}")
                         except json.JSONDecodeError:
                             continue
                 print("\n")
-                if self.debug:
-                    print(f"\n[DEBUG] Full_Response: {full_response}")
-                return full_response
+                return data
         except requests.RequestException as e:
             print(f"\nError: Unable to reach Ollama server. {e}")
             return ""
@@ -261,17 +305,19 @@ class OllamaChat:
     Encapsulates the chat conversation with the Ollama server.
     Manages the conversation payload and provides an interactive CLI.
     """
-    def __init__(self, client: OllamaClient, prompts_file: Optional[str], system_prompt: str):
+    def __init__(self, client: OllamaClient, prompts_file: Optional[str], system_prompt: str, debug: bool = False):
         """
         Slogan: Initializes the OllamaChat session.
         Parameters:
             client (OllamaClient): The client for server communication.
             prompts_file (Optional[str]): Path to the YAML file with the initial payload.
             system_prompt (str): A system prompt to initialize the conversation context.
+            debug (bool): Flag to enable debug mode.
         Returns: None.
         """
         self.client = client
         self.payload = self._load_payload(prompts_file, system_prompt)
+        self.debug = debug
 
     def _load_payload(self, prompts_file: Optional[str], system_prompt: str) -> dict:
         """
@@ -309,91 +355,6 @@ class OllamaChat:
                     print(f"Warning: Tool '{tool_name}' defined in YAML is not registered in the agent.")
         
         return payload
-
-    def extract_json_from_text(self, text: str) -> Optional[str]:
-        """
-        Slogan: Extracts the first JSON object substring from text.
-        Parameters:
-            text (str): The input text that may contain a JSON object.
-        Returns:
-            Optional[str]: The extracted JSON substring if found, else None.
-        """
-        match = re.search(r'({.*})', text, re.DOTALL)
-        if match:
-            return match.group(1)
-        return None
-
-    def fix_invalid_json(self, json_str: str) -> str:
-        """
-        Slogan: Fixes common JSON formatting issues, such as missing quotes.
-        Parameters:
-            json_str (str): The potentially malformed JSON string.
-        Returns:
-            str: The corrected JSON string.
-        """
-        # Fix missing quotes for the function name.
-        # This regex finds patterns like: "name": get_current_weather and adds quotes around get_current_weather.
-        fixed = re.sub(r'("name":\s*)([a-zA-Z0-9_]+)', r'\1"\2"', json_str)
-        return fixed
-
-    def _execute_tool_call(self, tool_call_data: dict) -> str:
-        """
-        Slogan: Executes a tool call extracted from a tool call data structure.
-        Parameters:
-            tool_call_data (dict): Contains tool call information with keys 'name' and 'parameters' or 'arguments'.
-        Returns:
-            str: The result from executing the tool function.
-        """
-        # Support both formats: {"name": ..., "parameters": ...} and {"function": {"name": ..., "arguments": ...}}
-        if "name" in tool_call_data and "parameters" in tool_call_data:
-            tool_name = tool_call_data.get("name")
-            arguments = tool_call_data.get("parameters", {})
-        elif "function" in tool_call_data:
-            function_data = tool_call_data.get("function", {})
-            tool_name = function_data.get("name")
-            arguments = function_data.get("arguments", {})
-        else:
-            print("[Agent] Tool call data not recognized.")
-            return ""
-
-        print("\n[Agent] Detected a tool call for tool:", tool_name)
-        # Execute the tool function (using the global registry or a local mapping)
-        tool_call = {"tool": tool_name, "args": arguments}
-        result = execute_tool_function(tool_call)
-        print(f"[Agent] Tool result: {result}")
-        # Append the tool response to the conversation history
-        self.payload["messages"].append({"role": "tool", "content": result})
-        return result
-
-    def process_assistant_response(self, assistant_response: str) -> str:
-        """
-        Slogan: Processes the assistant response, detects tool calls, and executes them.
-        Parameters:
-            assistant_response (str): The raw assistant response.
-        Returns:
-            str: The processed response (tool output if executed, otherwise the original text).
-        """
-        # Try to extract and process a tool call from the assistant's response
-        try:
-            data = json.loads(assistant_response)
-            print(f"[DEBUG]: assistant_response={assistant_response}")
-            message = data.get("message", {})
-            if self.client.debug:
-                print(f"[DEBUG]: message={message}")
-            # Check for explicit tool_calls list first
-            if "tool_calls" in message and isinstance(message["tool_calls"], list) and message["tool_calls"]:
-                if self.client.debug:
-                    print(f"[DEBUG]: tool_calls={message["tool_calls"]}")
-                return self._execute_tool_call(message["tool_calls"][0])
-            # Otherwise, try to extract a tool call from the text
-            json_substring = extract_json_from_text(message.get("content", ""))
-            if json_substring:
-                fixed_json = fix_invalid_json(json_substring)
-                tool_call_data = json.loads(fixed_json)
-                return self._execute_tool_call(tool_call_data)
-            return message.get("content", "")
-        except json.JSONDecodeError:
-            return assistant_response
             
     def run(self) -> None:
         """
@@ -421,12 +382,17 @@ class OllamaChat:
                 # Append user's message.
                 self.payload["messages"].append({"role": "user", "content": user_input})
                 # Send payload to the API.
-                assistant_response = self.client.send_payload(self.payload)
-                print(f"[DEBUG]: assistant_response={assistant_response}")
-                # Process assistant response for potential tool calls.
-                processed_response = self.process_assistant_response(assistant_response)
-                # Append assistant (or tool) response.
-                self.payload["messages"].append({"role": "assistant", "content": processed_response})
+                response = self.client.send_payload(self.payload)
+
+                # Retrieve the 'message' sub-dictionary; use an empty dict if not present
+                message = response.get("message", {})
+                # Create the simplified assistant message object
+                assistant_msg = {
+                    "role": message.get("role", ""),
+                    "content": message.get("content", "")
+                }
+                # Append assistant message.
+                self.payload["messages"].append(json.dumps(assistant_msg))
 
             except (EOFError, KeyboardInterrupt):
                 print("\nExiting...")
@@ -508,7 +474,7 @@ def main() -> None:
         print("🔍 Debug mode enabled - Printing raw responses")
 
     # Instantiate OllamaChat with the merged system prompt and prompts file.
-    chat_session = OllamaChat(client, config["prompts_file"], config["system"])
+    chat_session = OllamaChat(client, config["prompts_file"], config["system"], debug=args.debug)
     chat_session.run()
 
 if __name__ == "__main__":
