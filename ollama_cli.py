@@ -163,10 +163,10 @@ def get_current_weather(location: str, format: str) -> str:
             if data:
                 return {"lat": data[0].get("lat"), "lon": data[0].get("lon")}
             else:
-                logging.warning(f"No location found for query: {query}")
+                logging.warning(f"[WARNING get_lat_long()]: No location found for query: {query}")
                 return None
         except requests.RequestException as e:
-            logging.error(f"Error fetching geolocation data: {e}")
+            logging.error(f"[ERROR get_lat_long()]: Error fetching geolocation data: {e}")
             raise
 
     def get_weather_forecast(lat: float, lon: float, units: str = "imperial", date: str = None) -> dict:
@@ -195,7 +195,7 @@ def get_current_weather(location: str, format: str) -> str:
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
-            logging.error(f"Error fetching weather forecast: {e}")
+            logging.error(f"[ERROR get_weather_forecast()]: Error fetching weather forecast: {e}")
             raise
 
     # Parse the location string. Expecting "city,state,country" (state is optional).
@@ -225,9 +225,7 @@ def get_current_weather(location: str, format: str) -> str:
     json_object_str = json.dumps(weather_json)
 
     # Return the final string that includes instructions for generating a natural language response.
-    return (f"Here is a JSON object that represents current, minutely, hourly and daily weather forecasts for "
-            f"{city},{state},{country} in the {units} scale. Please generate a natural language response to the end user "
-            f"that answers his initial query as reflected in the most recent user role content. {json_object_str}")
+    return (f"""Please parse the following JSON object and generate a natural language response to the end user. The JSON object contains weather forecast data for {location} in the {units} system of measurements. You answer should summarize the data contained in the JSON object for current weather conditions and a forecast for the next several days.  In your introductory statement, state 'This is a weather forecast summary for {location} for current conditions and a forecast for the next several days.' Here is the JSON object -> {json_object_str}""")
 
 # --------------------------
 # Configuration Merging Logic
@@ -254,7 +252,7 @@ def merge_config(args: argparse.Namespace) -> dict:
             with open(filename, "r") as f:
                 yaml_config = yaml.safe_load(f) or {}
         except Exception as e:
-            print(f"Warning: Could not load prompts file '{filename}'")
+            logging.warning(f"[WARNING merge_config()]: Could not load prompts file '{filename}'")
     
     # Extract values from YAML file (if available)
     yaml_host = yaml_config.get("host")
@@ -444,9 +442,10 @@ class OllamaClient:
                             print(text_piece, end="", flush=True)
                             tool_response = self._process_tool_calls(data)
                             if self.debug:
-                                print(f"[DEBUG OllamaClient] Response: {data}")
-                                print(f"[DEBUG OllamaClient] tool_response: {tool_response}")
+                                print(f"\n[DEBUG OllamaClient] Response: {data}")
                             if tool_response is not None:
+                                if self.debug:
+                                    print(f"\n[DEBUG OllamaClient] tool_response: {tool_response}")
                                 for t in tool_response:
                                     messages.append(t)
                         except json.JSONDecodeError:
@@ -456,7 +455,7 @@ class OllamaClient:
                     messages.append({"role": "assistant", "content": full_text})
                 return messages
         except requests.RequestException as e:
-            print(f"\nError: Unable to reach Ollama server. {e}")
+            logging.error(f"\n[ERROR send_payload]:: Unable to reach Ollama server. {e}")
             return []
 
 class OllamaChat:
@@ -492,10 +491,10 @@ class OllamaChat:
             with open(file_to_load, "r") as f:
                 payload = yaml.safe_load(f) or {}
                 if not isinstance(payload, dict):
-                    print(f"Warning: '{file_to_load}' does not contain a valid dictionary. Using empty payload.")
+                    logging.warning(f"[WARNING load_payload]: '{file_to_load}' does not contain a valid dictionary. Using empty payload.")
                     payload = {}
         except Exception as e:
-            print(f"Warning: Could not load prompts file '{file_to_load}': {e}. Creating empty payload.")
+            logging.warning(f"[WARNING load_payload]: Could not load prompts file '{file_to_load}': {e}. Creating empty payload.")
             payload = {}
 
         # Merge configuration into payload if not already set.
@@ -511,7 +510,7 @@ class OllamaChat:
             for tool in payload["tools"]:
                 tool_name = tool.get("function", {}).get("name")
                 if tool_name and tool_name not in TOOL_REGISTRY:
-                    print(f"Warning: Tool '{tool_name}' defined in YAML is not registered in the agent.")
+                    logging.warning(f"[WARNING load_payload]: Tool '{tool_name}' defined in YAML is not registered in the agent.")
         
         return payload
             
