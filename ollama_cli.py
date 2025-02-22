@@ -96,20 +96,138 @@ def execute_tool_function(tool_call: dict):
 # Sample Tool Implementation
 # --------------------------
 
+import os
+import requests
+import json
+import logging
+
 @register_tool("get_current_weather")
 def get_current_weather(location: str, format: str) -> str:
     """
-    Slogan: Retrieves current weather information for a location.
+    Slogan: Retrieves current weather forecast for a location using live API calls.
+    
     Parameters:
-        location (str): The location to get the weather for.
+        location (str): The location in the format "city,state,country" (state is optional).
         format (str): Temperature format, either 'celsius' or 'fahrenheit'.
+    
     Returns:
-        str: A string representing the current weather.
+        str: A formatted string that includes a JSON object with current, minutely, hourly, 
+             and daily weather forecasts along with instructions for generating a natural language response.
     """
-    if format == "celsius":
-        return f"Current weather in {location}: 22°C with clear skies."
+
+    def get_api_key():
+        """
+        Slogan: Retrieves the OpenWeatherMap API key from environment variables.
+        
+        This function obtains the API key from the 'OPENWEATHER_API_KEY' environment variable.
+        If the API key is not set, it logs an error and raises a ValueError.
+        
+        Returns:
+            str: The OpenWeatherMap API key.
+        
+        Raises:
+            ValueError: If the API key is missing from the environment.
+        """
+        api_key = os.getenv("OPENWEATHER_API_KEY")
+        if not api_key:
+            logging.error("API key for OpenWeatherMap is not set in the environment variable 'OPENWEATHER_API_KEY'.")
+            raise ValueError("Missing API key for OpenWeatherMap.")
+        return api_key
+
+
+    def get_lat_lon(city: str, country: str, state: str = None, limit: int = 1) -> dict:
+        """
+        Retrieves the latitude and longitude for a given city location using the OpenWeatherMap Geocoding API.
+        
+        Parameters:
+            city (str): The name of the city.
+            country (str): The ISO 3166 country code.
+            state (str, optional): The state code (if applicable).
+            limit (int, optional): Number of results to return.
+            
+        Returns:
+            dict: A dictionary with 'lat' and 'lon' keys. Returns None if no location is found.
+        """
+        # Construct the query parameter
+        query = f"{city},{state},{country}" if state else f"{city},{country}"
+
+        api_key = get_api_key()
+
+        url = "http://api.openweathermap.org/geo/1.0/direct"
+        params = {"q": query, "limit": limit, "appid": api_key}
+        
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            if data:
+                return {"lat": data[0].get("lat"), "lon": data[0].get("lon")}
+            else:
+                logging.warning(f"No location found for query: {query}")
+                return None
+        except requests.RequestException as e:
+            logging.error(f"Error fetching geolocation data: {e}")
+            raise
+
+    def get_weather_forecast(lat: float, lon: float, units: str = "imperial", date: str = None) -> dict:
+        """
+        Retrieves weather forecast statistics for a given location using the OpenWeatherMap One Call API.
+        
+        Parameters:
+            lat (float): Latitude in decimal degrees.
+            lon (float): Longitude in decimal degrees.
+            units (str, optional): Units of measurement ('standard', 'metric', or 'imperial'). Defaults to 'standard'.
+            date (str, optional): Date in YYYY-MM-DD format for a weather summary. Defaults to None.
+            
+        Returns:
+            dict: A JSON object with weather forecast data (current, minutely, hourly, daily).
+        """
+
+        api_key = get_api_key()
+        
+        base_url = "https://api.openweathermap.org/data/3.0/onecall"
+        params = {"lat": lat, "lon": lon, "units": units, "appid": api_key}
+        if date:
+            params["date"] = date
+        
+        try:
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logging.error(f"Error fetching weather forecast: {e}")
+            raise
+
+    # Parse the location string. Expecting "city,state,country" (state is optional).
+    parts = [part.strip() for part in location.split(",")]
+    if len(parts) == 3:
+        city, state, country = parts
+    elif len(parts) == 2:
+        city, country = parts
+        state = ""
     else:
-        return f"Current weather in {location}: 72°F with clear skies."
+        city = parts[0]
+        state = ""
+        country = ""
+
+    # Map the temperature format to API units.
+    units = "metric" if format.lower() == "celsius" else "imperial"
+
+    # Get latitude and longitude.
+    coords = get_lat_lon(city, country, state)
+    if not coords:
+        return f"I could not geolocate the specified {location}. Please inform the user that there was an error, and resubmit the request"
+
+    # Get the weather forecast JSON object.
+    weather_json = get_weather_forecast(lat=coords["lat"], lon=coords["lon"], units=units)
+
+    # Convert the JSON object to a string.
+    json_object_str = json.dumps(weather_json)
+
+    # Return the final string that includes instructions for generating a natural language response.
+    return (f"Here is a JSON object that represents current, minutely, hourly and daily weather forecasts for "
+            f"{city},{state},{country} in the {units} scale. Please generate a natural language response to the end user "
+            f"that answers his initial query as reflected in the most recent user role content. {json_object_str}")
 
 # --------------------------
 # Configuration Merging Logic
