@@ -133,70 +133,6 @@ def get_current_weather(location: str, format: str) -> str:
             logging.error("API key for OpenWeatherMap is not set in the environment variable 'OPENWEATHER_API_KEY'.")
             raise ValueError("Missing API key for OpenWeatherMap.")
         return api_key
-
-
-    def get_lat_lon(city: str, country: str = "US", state: str = None, limit: int = 1) -> dict:
-        """
-        Retrieves the latitude and longitude for a given city location using the OpenWeatherMap Geocoding API.
-        
-        Parameters:
-            city (str): The name of the city.
-            country (str): The ISO 3166 country code.
-            state (str, optional): The state code (if applicable).
-            limit (int, optional): Number of results to return.
-            
-        Returns:
-            dict: A dictionary with 'lat' and 'lon' keys. Returns None if no location is found.
-        """
-        # Construct the query parameter
-        query = f"{city},{state},{country}" if state else f"{city},{country}"
-
-        api_key = get_api_key()
-
-        url = "http://api.openweathermap.org/geo/1.0/direct"
-        params = {"q": query, "limit": limit, "appid": api_key}
-        
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            if data:
-                return {"lat": data[0].get("lat"), "lon": data[0].get("lon")}
-            else:
-                logging.warning(f"[WARNING get_lat_long()]: No location found for query: {query}")
-                return None
-        except requests.RequestException as e:
-            logging.error(f"[ERROR get_lat_long()]: Error fetching geolocation data: {e}")
-            raise
-
-    def get_weather_forecast_by_coords(lat: float, lon: float, units: str = "imperial", date: str = None) -> dict:
-        """
-        Retrieves weather forecast statistics for given coordinates using the OpenWeatherMap One Call API.
-        
-        Parameters:
-            lat (float): Latitude in decimal degrees.
-            lon (float): Longitude in decimal degrees.
-            units (str, optional): Units of measurement ('standard', 'metric', or 'imperial'). Defaults to 'standard'.
-            date (str, optional): Date in YYYY-MM-DD format for a weather summary. Defaults to None.
-            
-        Returns:
-            dict: A JSON object with weather forecast data (current, minutely, hourly, daily).
-        """
-
-        api_key = get_api_key()
-        
-        base_url = "https://api.openweathermap.org/data/3.0/onecall"
-        params = {"lat": lat, "lon": lon, "units": units, "appid": api_key}
-        if date:
-            params["date"] = date
-        
-        try:
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logging.error(f"[ERROR get_weather_forecast_by_coords()]: Error fetching weather forecast: {e}")
-            raise
         
     def get_weather_forecast_by_location(location: str, units: str = "imperial") -> dict:
         """
@@ -224,37 +160,21 @@ def get_current_weather(location: str, format: str) -> str:
             logging.error(f"[ERROR get_weather_forecast_by_location()]: Error fetching weather forecast: {e}")
             raise
 
-    # Parse the location string. Expecting "city,state,country" (state is optional).
-    parts = [part.strip() for part in location.split(",")]
-    if len(parts) == 3:
-        city, state, country = parts
-    elif len(parts) == 2:
-        city, country = parts
-        state = ""
-    else:
-        city = parts[0]
-        state = ""
-        country = "US"
-
     # Map the temperature format to API units.
     units = "metric" if format.lower() == "celsius" else "imperial"
-
-    # Get latitude and longitude.
-    coords = get_lat_lon(city, country, state)
-    if not coords:
-        return f"I could not geolocate the specified {location}. Please inform the user that there was an error, and resubmit the request"
-
-    # Get the weather forecast JSON object.
-    # weather_json = get_weather_forecast_by_coords(lat=coords["lat"], lon=coords["lon"], units=units)
     
     # Get the weather forecast JSON object.
-    weather_json = get_weather_forecast_by_location(location=location, units=units)
+    if location is not None:
+        weather_json = get_weather_forecast_by_location(location=location, units=units)
 
-    # Convert the JSON object to a string.
-    json_object_str = json.dumps(weather_json)
+        # Convert the JSON object to a string.
+        json_object_str = json.dumps(weather_json)
 
-    # Return the final string that includes instructions for generating a natural language response.
-    return (f"""Parse the JSON object and generate a natural language response. The JSON object contains weather forecast data for {location} in the {units} system of measurements. In your introductory statement, state 'This is a weather summary for {location}.' {json_object_str}""")
+        # Return the final string that includes instructions for generating a natural language response.
+        return (f"""Parse the JSON object and generate a natural language response. The JSON object contains weather forecast data for {location} in the {units} system of measurements. In your introductory statement, state 'This is a weather summary for {location}.' {json_object_str}""")
+    else:
+        return (f"""I didn't understand the location you provided. Can you enter it again?""")
+
 
 # --------------------------
 # Configuration Merging Logic
