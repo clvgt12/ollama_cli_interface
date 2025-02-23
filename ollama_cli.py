@@ -135,7 +135,7 @@ def get_current_weather(location: str, format: str) -> str:
         return api_key
 
 
-    def get_lat_lon(city: str, country: str, state: str = None, limit: int = 1) -> dict:
+    def get_lat_lon(city: str, country: str = "US", state: str = None, limit: int = 1) -> dict:
         """
         Retrieves the latitude and longitude for a given city location using the OpenWeatherMap Geocoding API.
         
@@ -169,9 +169,9 @@ def get_current_weather(location: str, format: str) -> str:
             logging.error(f"[ERROR get_lat_long()]: Error fetching geolocation data: {e}")
             raise
 
-    def get_weather_forecast(lat: float, lon: float, units: str = "imperial", date: str = None) -> dict:
+    def get_weather_forecast_by_coords(lat: float, lon: float, units: str = "imperial", date: str = None) -> dict:
         """
-        Retrieves weather forecast statistics for a given location using the OpenWeatherMap One Call API.
+        Retrieves weather forecast statistics for given coordinates using the OpenWeatherMap One Call API.
         
         Parameters:
             lat (float): Latitude in decimal degrees.
@@ -195,7 +195,33 @@ def get_current_weather(location: str, format: str) -> str:
             response.raise_for_status()
             return response.json()
         except requests.RequestException as e:
-            logging.error(f"[ERROR get_weather_forecast()]: Error fetching weather forecast: {e}")
+            logging.error(f"[ERROR get_weather_forecast_by_coords()]: Error fetching weather forecast: {e}")
+            raise
+        
+    def get_weather_forecast_by_location(location: str, units: str = "imperial") -> dict:
+        """
+        Retrieves weather forecast statistics for a given location using the OpenWeatherMap One Call API.
+        
+        Parameters:
+            location (str): text string indicating the city, state, and country designations per ISO 3166 standards.
+            units (str, optional): Units of measurement ('standard', 'metric', or 'imperial'). Defaults to 'standard'.
+            
+        Returns:
+            dict: A JSON object with weather forecast data (current, minutely, hourly, daily).
+        """
+
+        api_key = get_api_key()
+        
+        base_url = "https://api.openweathermap.org/data/2.5/weather"
+
+        params = {"q": location, "units": units, "appid": api_key}
+        
+        try:
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as e:
+            logging.error(f"[ERROR get_weather_forecast_by_location()]: Error fetching weather forecast: {e}")
             raise
 
     # Parse the location string. Expecting "city,state,country" (state is optional).
@@ -208,7 +234,7 @@ def get_current_weather(location: str, format: str) -> str:
     else:
         city = parts[0]
         state = ""
-        country = ""
+        country = "US"
 
     # Map the temperature format to API units.
     units = "metric" if format.lower() == "celsius" else "imperial"
@@ -219,13 +245,16 @@ def get_current_weather(location: str, format: str) -> str:
         return f"I could not geolocate the specified {location}. Please inform the user that there was an error, and resubmit the request"
 
     # Get the weather forecast JSON object.
-    weather_json = get_weather_forecast(lat=coords["lat"], lon=coords["lon"], units=units)
+    # weather_json = get_weather_forecast_by_coords(lat=coords["lat"], lon=coords["lon"], units=units)
+    
+    # Get the weather forecast JSON object.
+    weather_json = get_weather_forecast_by_location(location=location, units=units)
 
     # Convert the JSON object to a string.
     json_object_str = json.dumps(weather_json)
 
     # Return the final string that includes instructions for generating a natural language response.
-    return (f"""Please parse the following JSON object and generate a natural language response to the end user. The JSON object contains weather forecast data for {location} in the {units} system of measurements. You answer should summarize the data contained in the JSON object for current weather conditions and a forecast for the next several days.  In your introductory statement, state 'This is a weather forecast summary for {location} for current conditions and a forecast for the next several days.' Here is the JSON object -> {json_object_str}""")
+    return (f"""Parse the JSON object and generate a natural language response. The JSON object contains weather forecast data for {location} in the {units} system of measurements. In your introductory statement, state 'This is a weather summary for {location}.' {json_object_str}""")
 
 # --------------------------
 # Configuration Merging Logic
