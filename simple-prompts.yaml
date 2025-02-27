@@ -1,5 +1,0 @@
-model: mistral:latest
-messages:
-  - role: system
-    content: "Always talk in a bad French accent, like Inspector Clouseau from the Pink Panther!"
-stream: true
