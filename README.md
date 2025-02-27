@@ -40,7 +40,7 @@ $ python3 ./ollama_cli.py --prompts=PROMPTS_YAML_FILENAME
 ```
 ## Prompts.yaml files
 
-The system prompts can be customized by providing different yaml files to the Ollama served language models. To enable an AI agent that can gather current weather conditions given a specified location, invoke `ollama_cli.py` with the option `--prompts="tools-prompts.yaml`
+The system prompts can be customized by providing different yaml files to the Ollama served language models. To enable an AI agent that can gather current weather conditions given a specified location, invoke `ollama_cli.py` with the option `--prompts="tools-prompts.yaml"`
 
 ## Usage
 
