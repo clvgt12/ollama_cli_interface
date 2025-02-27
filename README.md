@@ -5,11 +5,11 @@
 ## Introduction
 In February 2025 I participated in the Hugging Face AI Agent [course](./images/hugging_face_ai_agent_certificate_Feb_2025.jpg "Hugging Face AI Agent certificate of completion issued to Chris Vitalos February 2025"). Part of the course was a coding challenge to create a Python based AI agent using Hugging Face Spaces. 
 
-I decided to strike out on my own to use locally served LLM via an Ollama inference server, with a CLI to accept the prompts and display the response.
+I decided to strike out on my own to use locally served small language models via an [Ollama](https://ollama.ai) inference server running on my laptop, with a CLI to accept the prompts and display the response.
 
 ## Use Case
-1. As a user I want to use a simple command line interface to issue prompts to an large language model.
-2. As a AI agent learner, I want to create a AI agent to help me learn agentic AI architectures, by have the agent interact with a LLM and invoke tools that I create for specific queries.
+1. As a user I want to use a simple command line interface to issue prompts to the language model.
+2. As a AI agent learner, I want to create a AI agent to help me learn agentic AI architectures, by have the agent interact with a language model and invoke tools that I create for specific queries.
 
 ## Installation Instructions
 ### Prerequisites
