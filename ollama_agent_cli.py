@@ -12,17 +12,17 @@ import json
 import os
 import re
 import sys
-import yaml  # Used for YAML file parsing
 import logging
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
+from smolagents import CodeAgent, LiteLLMModel, tool
 
 # Default values (lowest precedence)
 DEFAULT_HOST = "localhost:11434"
-DEFAULT_MODEL = "mistral:latest"
+DEFAULT_MODEL = "qwen2.5-coder:14b"
 DEFAULT_URL = f"http://{DEFAULT_HOST}"
 
 # --------------------------
@@ -30,13 +30,13 @@ DEFAULT_URL = f"http://{DEFAULT_HOST}"
 # --------------------------
 
 @tool
-def get_current_weather(location: str, format: str) -> str:
+def get_current_weather(location: str, temp_format: str) -> str:
     """
     Retrieves current weather forecast for a location using live API calls.
     
     Args:
         location: The location in the format "city,state,country" (state is optional).
-        format: Temperature format, either 'celsius' or 'fahrenheit'.
+        temp_format: Temperature format, either 'celsius' or 'fahrenheit'.
     """
     base_url = "https://api.openweathermap.org/data/2.5/weather"
     api_key = os.getenv("OPENWEATHER_API_KEY")
@@ -45,11 +45,11 @@ def get_current_weather(location: str, format: str) -> str:
         raise ValueError("Missing API key for OpenWeatherMap.")
 
     # Map the temperature format to API units.
-    units = "metric" if format.lower() == "celsius" else "imperial"
+    units = "metric" if temp_format.lower() == "celsius" else "imperial"
     
     # Get the weather forecast JSON object.
-    if location is not None:
-        params = {"q": location, "units": units, "appid": api_key}
+    if location is not None and location.strip() != "":
+        params = {"q": location.strip(), "units": units, "appid": api_key}
         try:
             response = requests.get(base_url, params=params)
             response.raise_for_status()
@@ -67,56 +67,33 @@ def get_current_weather(location: str, format: str) -> str:
 
 def merge_config(args: argparse.Namespace) -> dict:
     """
-    Slogan: Merges configuration from command line, environment, YAML, and defaults.
+    Slogan: Merges configuration from command line, environment, and defaults.
     Parameters:
         args (argparse.Namespace): Parsed command-line arguments.
     Returns:
-        dict: Merged configuration with keys: host, model, system, prompts_file.
+        dict: Merged configuration with keys: host, model.
     """
-    # Attempt to load YAML configuration if a file is specified or if "prompts.yaml" exists.
-    yaml_config = {}
-    filename = None
-    if args.prompts:
-        filename = args.prompts
-    elif os.path.exists("prompts.yaml"):
-        filename = "prompts.yaml"
-    
-    if filename:
-        try:
-            with open(filename, "r") as f:
-                yaml_config = yaml.safe_load(f) or {}
-        except Exception as e:
-            logging.warning(f"[WARNING merge_config()]: Could not load prompts file '{filename}'")
-    
-    # Extract values from YAML file (if available)
-    yaml_host = yaml_config.get("host")
-    yaml_model = yaml_config.get("model") or yaml_config.get("model_name")
-    yaml_system = yaml_config.get("system") or yaml_config.get("system_prompt")
     
     # Environment variables
     env_host = os.getenv("OLLAMA_HOST")
     env_model = os.getenv("MODEL_NAME")
     
-    # Merge using precedence: command line > environment > YAML > default.
+    # Merge using precedence: command line > environment > default.
     final_host = (args.host if args.host is not None 
                   else (env_host if env_host is not None 
-                        else (yaml_host if yaml_host is not None 
-                              else DEFAULT_HOST)))
+                            else DEFAULT_HOST))
+    
+    final_url = (f"http://{final_host}" if final_host is not None
+                    else DEFAULT_URL)
     
     final_model = (args.model if args.model is not None 
                    else (env_model if env_model is not None 
-                         else (yaml_model if yaml_model is not None 
-                               else DEFAULT_MODEL)))
-    
-    final_system = (args.system if args.system is not None 
-                    else (yaml_system if yaml_system is not None 
-                          else DEFAULT_SYSTEM))
+                            else DEFAULT_MODEL))
     
     return {
         "host": final_host,
         "model": final_model,
-        "system": final_system,
-        "prompts_file": filename  # Either user-specified or discovered "prompts.yaml"
+        "url": final_url,
     }
 
 # --------------------------
@@ -128,18 +105,19 @@ class OllamaClient:
     Client for interacting with the Ollama server.
     Responsible only for making API calls.
     """
-    def __init__(self, host: str, model: str, debug: bool = False):
+    def __init__(self, host: str, model: str, url: str, debug: bool = False):
         """
         Slogan: Initializes the Ollama client.
         Parameters:
             host (str): The Ollama server host.
             model (str): The model name to use.
+            url (str): The Ollama server URL
             debug (bool): Flag to enable debug mode.
         """
         self.host = host
         self.model = model
         self.debug = debug
-        self.base_url = f"http://{self.host}"
+        self.base_url = url
 
     def _get_url(self, endpoint: str) -> str:
         """
@@ -192,7 +170,7 @@ class OllamaClient:
             print("❌ Error: Failed to fetch models from Ollama.")
             sys.exit(1)
 
-    def send_payload(self, payload: dict) -> str:
+    def send_payload(self, payload: dict) -> List[Dict[str, Any]]:
         """
         Slogan: Sends the conversation payload to the /api/chat endpoint.
         Parameters:
@@ -233,12 +211,13 @@ class SmolAgentsChat:
     Encapsulates the chat conversation with the Ollama server using the smolagents library.
     Manages the conversation payload and provides an interactive CLI.
     """
-    def __init__(self, debug: bool = False):
+    def __init__(self, client, debug: bool = False):
         """
-        Slogan: Initializes the Chat session.
+        Initializes the Chat session with a provided client.
+        
         Parameters:
+            client: The OllamaClient instance.
             debug (bool): Flag to enable debug mode.
-        Returns: None.
         """
         self.client = client
         self.debug = debug
@@ -251,6 +230,18 @@ class SmolAgentsChat:
         """
         bindings = self._setup_key_bindings()
         history = InMemoryHistory()
+
+        engine = LiteLLMModel(
+            model_id=f"ollama/{self.client.model}",
+            api_base=self.client.base_url,
+        )
+
+        agent = CodeAgent(
+            tools=[get_current_weather], 
+            model=engine, 
+            additional_authorized_imports=['json','requests','os'],
+            planning_interval=1 # This is where you activate planning!
+        )
 
         print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
         print("Type 'exit' or 'quit' to end the session.")
@@ -302,25 +293,13 @@ def parse_arguments() -> argparse.Namespace:
         "--model",
         type=str,
         default=None,
-        help="Model name to use (overrides environment and YAML)"
+        help="Model name to use (overrides environment)"
     )
     parser.add_argument(
         "--host",
         type=str,
         default=None,
-        help="Ollama server host (overrides environment and YAML)"
-    )
-    parser.add_argument(
-        "--system",
-        type=str,
-        default=None,
-        help="A short system prompt to initialize the conversation context (overrides YAML)"
-    )
-    parser.add_argument(
-        "--prompts",
-        type=str,
-        default=None,
-        help="YAML file containing initial conversation context (default: prompts.yaml if exists)"
+        help="Ollama server host (overrides environment)"
     )
     parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode to print raw responses"
@@ -336,12 +315,7 @@ def main() -> None:
     args = parse_arguments()
     config = merge_config(args)
 
-    engine = LiteLLMModel(
-        model_id=config["model"],
-        api_base=config["ollama_url"],
-    )
-    
-    client = OllamaClient(host=config["host"], model=config["model"], debug=args.debug)
+    client = OllamaClient(host=config["host"], model=config["model"], url=config["url"], debug=args.debug)
 
     # Verify connection and model availability.
     client.check_connection()
@@ -352,7 +326,7 @@ def main() -> None:
     if args.debug:
         print("🔍 Debug mode enabled - Printing raw responses")
 
-    # Instantiate SmolAgentsChat with the merged system prompt and prompts file.
+    # Instantiate SmolAgentsChat.
     chat_session = SmolAgentsChat(client, debug=args.debug)
     chat_session.run()
 
