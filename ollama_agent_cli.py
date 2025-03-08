@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import logging
+from dotenv import load_dotenv
 from typing import Optional, List, Dict, Any
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
@@ -39,6 +40,7 @@ def get_current_weather(location: str, temp_format: str) -> str:
         temp_format: Temperature format, either 'celsius' or 'fahrenheit'.
     """
     base_url = "https://api.openweathermap.org/data/2.5/weather"
+    load_dotenv(".env")
     api_key = os.getenv("OPENWEATHER_API_KEY")
     if not api_key:
         logging.error("API key for OpenWeatherMap is not set in the environment variable 'OPENWEATHER_API_KEY'.")
