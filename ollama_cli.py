@@ -28,6 +28,7 @@ from prompt_toolkit.key_binding import KeyBindings
 DEFAULT_HOST = "localhost:11434"
 DEFAULT_MODEL = "mistral:latest"
 DEFAULT_SYSTEM = "you are a helpful assistant."
+DEFAULT_CLI_HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".ollama_cli_prompt_history_file")
 
 # --------------------------
 # Global Tool Registry Setup
@@ -96,11 +97,6 @@ def execute_tool_function(tool_call: dict):
 # --------------------------
 # Sample Tool Implementation
 # --------------------------
-
-import os
-import requests
-import json
-import logging
 
 @register_tool("get_current_weather")
 def get_current_weather(location: str, format: str) -> str:
@@ -494,51 +490,28 @@ class OllamaChat:
                     logging.warning(f"[WARNING load_payload]: Tool '{tool_name}' defined in YAML is not registered in the agent.")
         
         return payload
-            
-    def run(self) -> None:
+
+    def _send_payload(self, user_input: str) -> None:
         """
-        Slogan: Runs the interactive chat loop.
-        Parameters: None.
-        Returns: None.
+        Slogan: Sends user input to the API and maintains conversational context.
+
+        Parameters:
+            user_input (str): The user's input string collected from the CLI.
+
+        Returns:
+            None: Updates internal payload state without returning data to caller.
         """
-        bindings = self._setup_key_bindings()
-        history = InMemoryHistory()
-
-        print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
-        print("Type 'exit' or 'quit' to end the session.")
-
-        while True:
-            try:
-                user_input = prompt(
-                    "\nYour query?> ",
-                    history=history,
-                    auto_suggest=AutoSuggestFromHistory(),
-                    key_bindings=bindings,
-                )
-                if user_input.lower() in ["exit", "quit"]:
-                    break
-
-                def send_payload(user_input:str) -> None:
-                    # Append user's message.
-                    if(user_input != ''):
-                        self.payload["messages"].append({"role": "user", "content": user_input})
-                    # Send payload to the API.
-                    messages = self.client.send_payload(self.payload)
-                    if self.debug:
-                        print(f"[DEBUG OllamaChat]: payload: {self.payload}")
-                        print(f"[DEBUG OllamaChat]: messages: {messages}")
-                    # Append assistant messages to payload messages to maintain chat memory.
-                    for m in messages:
-                        if m['content'] != '':   # Filter out messages that have null content!
-                            self.payload["messages"].append(m)
-                        if m['role'] == 'tool':
-                            send_payload('')
-
-                send_payload(user_input)
-
-            except (EOFError, KeyboardInterrupt):
-                print("\nExiting...")
-                break
+        if user_input.strip():
+            self.payload["messages"].append({"role": "user", "content": user_input})
+        messages = self.client.send_payload(self.payload)
+        if self.debug:
+            print(f"[DEBUG OllamaChat]: payload: {self.payload}")
+            print(f"[DEBUG OllamaChat]: messages: {messages}")
+        for m in messages:
+            if m['content']:
+                self.payload["messages"].append(m)
+            if m['role'] == 'tool':
+                self._send_payload('')
 
     def _setup_key_bindings(self) -> KeyBindings:
         """
@@ -555,6 +528,77 @@ class OllamaChat:
             event.app.exit()
 
         return bindings
+
+    # Implement persistent command line prompt queries
+
+    def _save_cli_history(self, history, filename=DEFAULT_CLI_HISTORY_FILE):
+        """
+        Save in-memory prompt history to a file.
+        
+        Parameters:
+        - history: InMemoryHistory instance containing prompt history.
+        - filename: File path where history will be saved.
+        """
+        try:
+            # Retrieve all history entries and keep only the last 250
+            recent_entries = history.get_strings()[-250:]
+
+            with open(filename, 'w') as f:
+                for entry in recent_entries:
+                    f.write(f"{entry}\n")
+        except IOError as e:
+            print(f"[ERROR] Saving CLI history failed: {e}")
+
+    def _load_cli_history(self, filename=DEFAULT_CLI_HISTORY_FILE):
+        """
+        Load prompt history from a file into InMemoryHistory.
+        
+        Parameters:
+        - filename: File path from which history will be loaded.
+        
+        Returns:
+        - An instance of InMemoryHistory containing previously saved entries.
+        """
+        history = InMemoryHistory()
+        if os.path.exists(filename):
+            try:
+                with open(filename, 'r') as f:
+                    for line in f:
+                        history.append_string(line.rstrip('\n'))
+            except IOError as e:
+                print(f"[ERROR] Loading CLI history failed: {e}")
+        return history
+
+    def run(self) -> None:
+        """
+        Slogan: Runs the interactive chat loop.
+        Parameters: None.
+        Returns: None.
+        """
+        bindings = self._setup_key_bindings()
+        history = self._load_cli_history()
+
+        print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
+        print("Type 'exit' or 'quit' to end the session.")
+
+        try:
+            while True:
+                user_input = prompt(
+                    "\nYour query?> ",
+                    history=history,
+                    auto_suggest=AutoSuggestFromHistory(),
+                    key_bindings=bindings,
+                )
+                if user_input.lower() in ["exit", "quit"]:
+                    break
+                self._send_payload(user_input)
+
+        except (EOFError, KeyboardInterrupt):
+            print("\nInterrupted by user.")
+
+        finally:
+            print("\nExiting...")
+            self._save_cli_history(history)
 
 def parse_arguments() -> argparse.Namespace:
     """
