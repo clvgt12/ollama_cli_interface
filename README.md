@@ -15,7 +15,8 @@ I decided to strike out on my own to use locally served small language models vi
 ### Prerequisites
 - Python 3.12 or later
 - Ollama, installed on your host computer, along with mistral v0.3 LLM to support AI agent use of tools
-- An OpenWeatherMap.org [API key](https://home.openweathermap.org/api_keys) to enable the agent to provide current weather given a specified location
+- An [OpenWeatherMap.org](https://home.openweathermap.org/api_keys) API key to enable the agent to provide current weather given a specified location
+- An [Geoapify.com](https://www.geoapify.com/api/) API key to enable the agent to obtain an exact geolocation of the provided location.
 ### Python and Required Modules Installation
 #### Windows
 1. Download and install Python from [python.org](https://www.python.org/downloads/windows/).
@@ -35,7 +36,8 @@ From the command line, run:
 ```
 $ ollama pull mistral:latest
 $ ollama serve
-$ export OPENWEATHER_API_KEY="somekey.."
+$ echo "Your_OpenWeatherMaps_API_key" > .env
+$ echo "Your_Geoapify_API_Key" >> .env
 $ python3 ./ollama_cli.py --prompts=PROMPTS_YAML_FILENAME
 ```
 ## Prompts.yaml files

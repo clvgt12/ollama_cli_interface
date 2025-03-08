@@ -116,7 +116,7 @@ def get_current_weather(location: str, format: str) -> str:
              and daily weather forecasts along with instructions for generating a natural language response.
     """
 
-    def get_api_key():
+    def get_api_key(api_key_name: str = "OPENWEATHER_API_KEY") -> str:
         """
         Slogan: Retrieves the OpenWeatherMap API key from environment variables.
         
@@ -130,12 +130,41 @@ def get_current_weather(location: str, format: str) -> str:
             ValueError: If the API key is missing from the environment.
         """
         load_dotenv(".env")
-        api_key = os.getenv("OPENWEATHER_API_KEY")
+        api_key = os.getenv(api_key_name)
         if not api_key:
-            logging.error("API key for OpenWeatherMap is not set in the environment variable 'OPENWEATHER_API_KEY'.")
-            raise ValueError("Missing API key for OpenWeatherMap.")
+            logging.error(f"API key for {api_key_name} is not set in the environment.")
+            raise ValueError(f"Missing API key for {api_key_name}.")
         return api_key
         
+    def refine_location(location: str) -> str:
+        """
+        Invokes Geoapify API call to ensure provided location contains city, state and county codes for given location.
+        
+        Parameters:
+            location (str): text string indicating the city, state, and country designations per user specification.
+            
+        Returns:
+            result (str): text string indicating the city, state, and country designations ISO 3166 standards returned by API call.
+        """
+
+        api_key = get_api_key("GEOAPIFY_API_KEY")
+        
+        base_url = "https://api.geoapify.com/v1/geocode/search"
+
+        params = {"text": location, "format": "json", "apiKey": api_key}
+        
+        try:
+            response = requests.get(base_url, params=params)
+            response.raise_for_status()
+            json_obj = response.json()
+            city=json_obj['results'][0]['city']
+            state=json_obj['results'][0]['state_code']
+            country=json_obj['results'][0]['country_code']
+            return f"{city},{state.upper()},{country.upper()}"
+        except requests.RequestException as e:
+            logging.error(f"[ERROR refine_location()]: Error fetching geolocation for: {location}")
+            return location
+
     def get_weather_forecast_by_location(location: str, units: str = "imperial") -> dict:
         """
         Retrieves weather forecast statistics for a given location using the OpenWeatherMap One Call API.
@@ -148,7 +177,7 @@ def get_current_weather(location: str, format: str) -> str:
             dict: A JSON object with weather forecast data (current, minutely, hourly, daily).
         """
 
-        api_key = get_api_key()
+        api_key = get_api_key("OPENWEATHER_API_KEY")
         
         base_url = "https://api.openweathermap.org/data/2.5/weather"
 
@@ -167,13 +196,14 @@ def get_current_weather(location: str, format: str) -> str:
     
     # Get the weather forecast JSON object.
     if location is not None:
-        weather_json = get_weather_forecast_by_location(location=location, units=units)
+        updated_location=refine_location(location)
+        weather_json = get_weather_forecast_by_location(location=updated_location, units=units)
 
         # Convert the JSON object to a string.
         json_object_str = json.dumps(weather_json)
 
         # Return the final string that includes instructions for generating a natural language response.
-        return (f"""Parse the JSON object and generate a natural language response. The JSON object contains weather forecast data for {location} in the {units} system of measurements. In your introductory statement, state 'This is a weather summary for {location}.' {json_object_str}""")
+        return (f"""Parse the JSON object and generate a natural language response. The JSON object contains weather forecast data for {updated_location} in the {units} system of measurements. In your introductory statement, state 'This is a weather summary for {updated_location}.' {json_object_str}""")
     else:
         return (f"""I didn't understand the location you provided. Can you enter it again?""")
 
