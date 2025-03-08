@@ -203,6 +203,30 @@ def get_current_weather(location: str, format: str) -> str:
     else:
         return (f"""I didn't understand the location you provided. Can you enter it again?""")
 
+@register_tool("evaluate_math_expression")
+def evaluate_math_expression(math_expression: str) -> str:
+    """
+    Evaluates a mathematical, algebraic, or trigonometric expression.
+
+    Parameters:
+        math_expression (str): A string representing the mathematical expression to be evaluated by the tool.
+
+    Returns:
+        str: A formatted string that includes the mathematical result, 
+             along with instructions for generating a natural language response.
+
+    Raises:
+        ValueError: If the expression is invalid or cannot be evaluated.
+    """
+    from sympy import sympify, SympifyError
+    try:
+        # sympify converts string expression into a symbolic SymPy object
+        expr = sympify(math_expression)
+        # Evaluate the symbolic expression numerically
+        result = expr.evalf()
+        return f"Generate a natural language response to the user that the expression {math_expression} evaluates to {result}."
+    except SympifyError as e:
+        return f"Generate a natural language response to the user that {math_expression} may not be valid and they should check it for accuracy."
 
 # --------------------------
 # Configuration Merging Logic
@@ -416,7 +440,8 @@ class OllamaClient:
                             data = json.loads(line)
                             text_piece = data["message"]["content"]
                             full_text += text_piece
-                            print(text_piece, end="", flush=True)
+                            if text_piece is not None and text_piece != "":
+                                print(text_piece, end="", flush=True)
                             tool_response = self._process_tool_calls(data)
                             if self.debug:
                                 print(f"\n[DEBUG OllamaClient] Response: {data}")

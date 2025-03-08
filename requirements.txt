@@ -4,3 +4,4 @@ pytz
 PyYAML
 prompt_toolkit 
 python-dotenv
+sympy

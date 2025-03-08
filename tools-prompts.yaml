@@ -23,3 +23,15 @@ tools:
         required:
           - location
           - format
+  - type: function
+    function:
+      name: evaluate_math_expression
+      description: "Evaluates a mathematical, algebraic, or trigonometric expression."
+      parameters:
+        type: object
+        properties:
+          math_expression:
+            type: string
+            description: "A string representing the mathematical expression to be evaluated by the tool."
+        required:
+          - math_expression
