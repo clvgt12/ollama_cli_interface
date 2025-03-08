@@ -25,6 +25,7 @@ from smolagents import CodeAgent, LiteLLMModel, tool
 DEFAULT_HOST = "localhost:11434"
 DEFAULT_MODEL = "qwen2.5-coder:14b"
 DEFAULT_URL = f"http://{DEFAULT_HOST}"
+DEFAULT_CLI_HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".ollama_cli_prompt_history_file")
 
 # --------------------------
 # Tool Setup
@@ -286,47 +287,44 @@ class SmolAgentsChat:
         """
         self.client = client
         self.debug = debug
-            
-    def run(self) -> None:
+
+    def _save_cli_history(self, history, filename=DEFAULT_CLI_HISTORY_FILE):
         """
-        Slogan: Runs the interactive chat loop.
-        Parameters: None.
-        Returns: None.
+        Save in-memory prompt history to a file.
+        
+        Parameters:
+        - history: InMemoryHistory instance containing prompt history.
+        - filename: File path where history will be saved.
         """
-        bindings = self._setup_key_bindings()
+        try:
+            # Retrieve all history entries and keep only the last 250
+            recent_entries = history.get_strings()[-250:]
+
+            with open(filename, 'w') as f:
+                for entry in recent_entries:
+                    f.write(f"{entry}\n")
+        except IOError as e:
+            print(f"[ERROR] Saving CLI history failed: {e}")
+
+    def _load_cli_history(self, filename=DEFAULT_CLI_HISTORY_FILE):
+        """
+        Load prompt history from a file into InMemoryHistory.
+        
+        Parameters:
+        - filename: File path from which history will be loaded.
+        
+        Returns:
+        - An instance of InMemoryHistory containing previously saved entries.
+        """
         history = InMemoryHistory()
-
-        engine = LiteLLMModel(
-            model_id=f"ollama/{self.client.model}",
-            api_base=self.client.base_url,
-        )
-
-        agent = CodeAgent(
-            tools=[get_current_weather], 
-            model=engine, 
-            additional_authorized_imports=['json','requests','os'],
-            planning_interval=1 # This is where you activate planning!
-        )
-
-        print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
-        print("Type 'exit' or 'quit' to end the session.")
-
-        while True:
+        if os.path.exists(filename):
             try:
-                user_input = prompt(
-                    "\nYour query?> ",
-                    history=history,
-                    auto_suggest=AutoSuggestFromHistory(),
-                    key_bindings=bindings,
-                )
-                if user_input.lower() in ["exit", "quit"]:
-                    break
-                if(user_input != ''):
-                    result = agent.run(user_input)
-
-            except (EOFError, KeyboardInterrupt):
-                print("\nExiting...")
-                break
+                with open(filename, 'r') as f:
+                    for line in f:
+                        history.append_string(line.rstrip('\n'))
+            except IOError as e:
+                print(f"[ERROR] Loading CLI history failed: {e}")
+        return history
 
     def _setup_key_bindings(self) -> KeyBindings:
         """
@@ -343,6 +341,51 @@ class SmolAgentsChat:
             event.app.exit()
 
         return bindings
+            
+    def run(self) -> None:
+        """
+        Slogan: Runs the interactive chat loop.
+        Parameters: None.
+        Returns: None.
+        """
+        bindings = self._setup_key_bindings()
+        history = self._load_cli_history()
+
+        engine = LiteLLMModel(
+            model_id=f"ollama/{self.client.model}",
+            api_base=self.client.base_url,
+        )
+
+        agent = CodeAgent(
+            tools=[get_current_weather], 
+            model=engine, 
+            additional_authorized_imports=['json','requests','os'],
+            planning_interval=1 # This is where you activate planning!
+        )
+
+        print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
+        print("Type 'exit' or 'quit' to end the session.")
+
+        try:
+            while True:
+                user_input = prompt(
+                    "\nYour query?> ",
+                    history=history,
+                    auto_suggest=AutoSuggestFromHistory(),
+                    key_bindings=bindings,
+                )
+                if user_input.lower() in ["exit", "quit"]:
+                    break
+                if(user_input != ''):
+                    result = agent.run(user_input)
+
+        except (EOFError, KeyboardInterrupt):
+            print("\nInterrupted by user.")
+
+        finally:
+            print("\nExiting...")
+            self._save_cli_history(history)
+
 
 def parse_arguments() -> argparse.Namespace:
     """
