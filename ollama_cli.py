@@ -17,6 +17,7 @@ import re
 import sys
 import yaml  # Used for YAML file parsing
 import logging
+from dotenv import load_dotenv
 from typing import Optional
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
@@ -128,6 +129,7 @@ def get_current_weather(location: str, format: str) -> str:
         Raises:
             ValueError: If the API key is missing from the environment.
         """
+        load_dotenv(".env")
         api_key = os.getenv("OPENWEATHER_API_KEY")
         if not api_key:
             logging.error("API key for OpenWeatherMap is not set in the environment variable 'OPENWEATHER_API_KEY'.")
