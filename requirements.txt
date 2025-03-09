@@ -5,3 +5,7 @@ PyYAML
 prompt_toolkit 
 python-dotenv
 sympy
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
+openinference-instrumentation-smolagents

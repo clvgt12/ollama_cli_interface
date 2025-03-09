@@ -20,12 +20,19 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
 from smolagents import CodeAgent, LiteLLMModel, tool
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
 
 # Default values (lowest precedence)
 DEFAULT_HOST = "localhost:11434"
 DEFAULT_MODEL = "qwen2.5-coder:14b"
 DEFAULT_URL = f"http://{DEFAULT_HOST}"
 DEFAULT_CLI_HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".ollama_cli_prompt_history_file")
+DEFAULT_TELEMETRY_HOST = ""
 
 # --------------------------
 # Tool Setup
@@ -123,7 +130,8 @@ def get_current_weather(location: str, temp_format: str) -> str:
     if location is not None:
         updated_location=refine_location(location)
         weather_json = get_weather_forecast_by_location(location=updated_location, units=units)
-        return json.dumps(weather_json)
+        # return json.dumps(weather_json)
+        return f"Formulate a natural language weather report using the following JSON data object: {json.dumps(weather_json)}"
     else:
         return (f"""I didn't understand the location you provided. Can you enter it again?""")
 
@@ -139,11 +147,12 @@ def merge_config(args: argparse.Namespace) -> dict:
     Returns:
         dict: Merged configuration with keys: host, model.
     """
-    
+    load_dotenv(".env")
     # Environment variables
     env_host = os.getenv("OLLAMA_HOST")
     env_model = os.getenv("MODEL_NAME")
-    
+    env_telemetry_host = os.getenv("TELEMETRY_HOST")
+
     # Merge using precedence: command line > environment > default.
     final_host = (args.host if args.host is not None 
                   else (env_host if env_host is not None 
@@ -155,12 +164,30 @@ def merge_config(args: argparse.Namespace) -> dict:
     final_model = (args.model if args.model is not None 
                    else (env_model if env_model is not None 
                             else DEFAULT_MODEL))
+
+    final_telemetry = (args.telemetry if args.telemetry is not None 
+                  else (env_telemetry_host if env_telemetry_host is not None 
+                            else DEFAULT_TELEMETRY_HOST))
     
     return {
         "host": final_host,
         "model": final_model,
         "url": final_url,
+        "telemetry": final_telemetry,
     }
+
+# --------------------------
+# Setup smolagents telemetry
+# --------------------------
+
+def setup_telemetry(telemetry_host: str):
+    """
+    Slogan: setup smolagents telemetry host
+    """
+    endpoint = f"http://{telemetry_host}/v1/traces"   # Point this to the correct endpoint running the telemetry server
+    trace_provider = TracerProvider()
+    trace_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(endpoint)))
+    SmolagentsInstrumentor().instrument(tracer_provider=trace_provider)
 
 # --------------------------
 # Ollama Client and Chat Classes
@@ -410,6 +437,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Ollama server host (overrides environment)"
     )
     parser.add_argument(
+        "--telemetry", 
+        type=str,
+        default=None,
+        help="Smolagents telemetry host (overrides environment)"
+    )
+    parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode to print raw responses"
     )
     return parser.parse_args()
@@ -431,6 +464,9 @@ def main() -> None:
 
     print(f"Connected to Ollama at {client.host}")
     print(f"Using model: {client.model}")
+    if config['telemetry'] is not None and config['telemetry'] != "":
+        setup_telemetry(config['telemetry'])
+        print(f"🔍 Telemetry enabled on host {config['telemetry']}")
     if args.debug:
         print("🔍 Debug mode enabled - Printing raw responses")
 
