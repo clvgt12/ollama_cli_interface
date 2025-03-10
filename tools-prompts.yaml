@@ -35,3 +35,30 @@ tools:
             description: "A string representing the mathematical expression to be evaluated by the tool."
         required:
           - math_expression
+  - type: function
+    function:
+      name: search_web
+      description: "Use an internet search engine to search on user query and return a list of URL with size of max_results."
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+            description: "The search query string specified by the user."
+          max_results:
+            type: int
+            description: "Maximum number of search results to return."
+        required:
+          - query
+  - type: function
+    function:
+      name: get_webpage_text
+      description: "Retrieve, parse and return plain text content from a user specified webpage."
+      parameters:
+        type: object
+        properties:
+          url:
+            type: string
+            description: "The URL of the webpage to retrieve."
+        required:
+          - url

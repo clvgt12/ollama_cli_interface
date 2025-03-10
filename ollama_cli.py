@@ -17,6 +17,8 @@ import re
 import sys
 import yaml  # Used for YAML file parsing
 import logging
+from bs4 import BeautifulSoup
+from duckduckgo_search import DDGS
 from dotenv import load_dotenv
 from typing import Optional
 from prompt_toolkit import prompt
@@ -227,6 +229,65 @@ def evaluate_math_expression(math_expression: str) -> str:
         return f"Generate a natural language response to the user that the expression {math_expression} evaluates to {result}."
     except SympifyError as e:
         return f"Generate a natural language response to the user that {math_expression} may not be valid and they should check it for accuracy."
+
+@register_tool("search_web")
+def search_web(query: str, max_results: int = 5) -> list:
+    """
+    Slogan: Use an internet search engine to search on user query and return a list of URL with size of max_results.
+    
+    Parameters:
+      query (str): The search query string specified by the user.
+      max_results (int): Maximum number of search results to return.
+    
+    Returns:
+      list: A list of URL strings from the search results.
+    """
+    results = []
+    # Use the DDGS context manager to handle the search session.
+    with DDGS() as ddgs:
+        # ddgs.text returns a generator of dictionaries containing search result details.
+        try:
+            for result in ddgs.text(query, max_results=max_results):
+                # Each result dictionary contains a key 'href' for the URL.
+                if "href" in result:
+                    results.append(result["href"])
+        except Exception as e:
+            results.append(f"I could not search the internet for this query {query} because I encountered this error {e}")
+    return results
+
+@register_tool("get_webpage_text")
+def get_webpage_text(url: str) -> str:
+    """
+    Slogan: Retrieve, parse and return plain text content from a user specified webpage.
+    
+    Parameters:
+      url (str): The URL of the webpage to retrieve.
+    
+    Returns:
+      str: A string containing the cleaned textual content of the webpage.
+    """
+    headers = {
+        # Again, using a common user agent string.
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    }
+    
+    # Request the webpage.
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # Raise an exception if the request fails.
+    except Exception as e:
+        return f"I could not obtain the requested web page at {url} because I encountered this error {e}"
+    
+    # Parse the webpage content.
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Remove script and style elements.
+    for element in soup(["script", "style"]):
+        element.extract()
+    
+    # Get the text, joining parts with a space and stripping extra whitespace.
+    text = soup.get_text(separator=' ', strip=True)
+    return f"Report back to the user that this is the text extracted from the requested web page: {text}"
 
 # --------------------------
 # Configuration Merging Logic
