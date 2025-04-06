@@ -616,6 +616,8 @@ class OllamaChat:
                 )
                 if user_input.lower() in ["exit", "quit"]:
                     break
+                if user_input.strip() is None or user_input.strip() == "":
+                    continue
                 self._send_payload(user_input)
 
         except (EOFError, KeyboardInterrupt):
