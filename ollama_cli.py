@@ -618,6 +618,7 @@ class OllamaChat:
                     break
                 if user_input.strip() is None or user_input.strip() == "":
                     continue
+                print("\nStarting inference...\n")
                 self._send_payload(user_input)
 
         except (EOFError, KeyboardInterrupt):
