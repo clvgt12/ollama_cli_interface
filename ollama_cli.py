@@ -12,6 +12,7 @@ import argparse
 import inspect
 import json
 import os
+import pprint
 import sys
 import logging
 import requests
@@ -31,6 +32,8 @@ DEFAULT_HOST = "localhost:11434"
 DEFAULT_MODEL = "gemma3:1b"
 DEFAULT_SYSTEM = "You are a helpful assistant."
 DEFAULT_CLI_HISTORY_FILE = os.path.expanduser("~/.ollama_cli_prompt_history_file")
+
+pp = pprint.PrettyPrinter()
 
 # --------------------------
 # Load configuration from prompts.yaml, env, and CLI
@@ -113,11 +116,11 @@ def execute_tool_function(tool_call: dict, client: "OllamaClient") -> dict:
 # Tools
 # --------------------------
 
-def web_search(query: str, k: int = 5, searx_url: Optional[str] = None) -> str:
+def web_search(query: str, k: int = 5) -> str:
     """
     Slogan: Query SearxNG and return the top k results as “[1] title – url – snippet.”
     """
-    base = (searx_url or os.getenv("SEARXNG_URL", "http://localhost:8080")).rstrip("/")
+    base = os.getenv("SEARXNG_URL", "http://localhost:8080").rstrip("/")
     k = max(1, min(int(k), 10))
     params = {"q": query, "format": "json", "language": "en", "safesearch": 1, "categories": "general"}
     try:
@@ -154,7 +157,6 @@ def get_webpage_text(url: str) -> str:
 def research_query(
     query: str,
     top_k: Optional[int] = 5,
-    searx_url: Optional[str] = None,
     client=None
 ) -> str:
     """
@@ -162,7 +164,7 @@ def research_query(
     """
     if client is None:
         return "Internal error: missing LLM client."
-    hits = web_search(query=query, k=top_k, searx_url=searx_url).splitlines()
+    hits = web_search(query=query, k=top_k).splitlines()
     excerpts = []
     for i, line in enumerate(hits, 1):
         parts = line.split("–")
@@ -172,7 +174,7 @@ def research_query(
     prompt = (
         f"You are an expert research assistant. Query: {query}\n\n"
         + "\n".join(excerpts)
-        + "\nPlease summarize each article and synthesize an overall answer."
+        + "\nInspect each article, discard errors and synthesize an overall response."
     )
     return client.send_direct_prompt(prompt)
 
@@ -222,8 +224,12 @@ class OllamaClient:
             "messages": [{"role":"user","content":prompt_str}],
             "stream": False
         }
+        if self.debug:
+            logging.debug("send_direct_prompt() -> Request payload: \n%s", pp.pformat(payload))
         r = requests.post(self._url("/api/chat"), json=payload)
         r.raise_for_status()
+        if self.debug:
+            logging.debug("send_direct_prompt() -> Response: %s", pp.pformat(r))
         return r.json()["message"]["content"]
 
     def _process_tool_calls(self, data: dict) -> list:
@@ -231,7 +237,7 @@ class OllamaClient:
         for call in data.get("message",{}).get("tool_calls",[]):
             msgs.append(execute_tool_function(call, self))
             if self.debug:
-                logging.debug("Tool call: %s → %s", call, msgs)
+                logging.debug("Tool call: %s → \n%s", call, pp.pformat(msgs))
         return msgs
 
     def send_payload(self, payload: dict) -> list:
@@ -240,7 +246,7 @@ class OllamaClient:
         printing each partial assistant response as it arrives.
         """
         if self.debug:
-            logging.debug("Request payload: %s", payload)
+            logging.debug("OllamaClient.send_payload() -> Request payload: \n%s", pp.pformat(payload))
 
         messages = []
         # Make sure we're explicitly requesting streaming at the HTTP level too
@@ -254,6 +260,8 @@ class OllamaClient:
             timeout=(3.05, None)  # no read timeout
         ) as resp:
             resp.raise_for_status()
+            if self.debug:
+                logging.debug("OllamaClient.send_payload() -> Response: %s", pp.pformat(resp))
             print(f"{self.model}> ", end="", flush=True)
             full = ""
 
@@ -314,14 +322,14 @@ class OllamaChat:
         self.payload["messages"].append({"role":"user","content":user_input})
         msgs = self.client.send_payload(self.payload)
         # merge tool + assistant messages into our payload
-        if self.debug:
-            logging.debug("Payload before merging tool msgs: %s", self.payload)
+        # if self.debug:
+        #     logging.debug("Payload before merging tool msgs: %s", self.payload)
         for m in msgs:
             # add either the tool output or the assistant’s final content
             if m.get("content"):
                 self.payload["messages"].append(m)
-        if self.debug:
-            logging.debug("Payload after merging tool msgs: %s", self.payload)
+        # if self.debug:
+        #     logging.debug("Payload after merging tool msgs: %s", self.payload)
         # if the LLM requested a tool, ask the LLM to act on the tool's response(s)
         if self.payload["messages"][-1].get("role") == "tool":
             # this sends the tool response back into the LLM 
