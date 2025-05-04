@@ -11,14 +11,17 @@ Ollama CLI Agent with Web Research Tool
 import argparse
 import inspect
 import json
+import logging
 import os
 import pprint
-import sys
-import logging
+import re
 import requests
+import sys
+import time
 import yaml
 from bs4 import BeautifulSoup
-from typing import Optional
+from functools import wraps
+from typing import Optional, Callable, TypeVar, Any
 
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
@@ -34,6 +37,35 @@ DEFAULT_SYSTEM = "You are a helpful assistant."
 DEFAULT_CLI_HISTORY_FILE = os.path.expanduser("~/.ollama_cli_prompt_history_file")
 
 pp = pprint.PrettyPrinter()
+T = TypeVar("T")
+
+# --------------------------------------------------------------------------- #
+# Performance measurement of functions
+# --------------------------------------------------------------------------- #
+def time_this(func: Callable[..., T]) -> Callable[..., T]:
+    """
+    Slogan: Wrap a callable, time its execution, log the duration at DEBUG level.
+
+    Parameters:
+        func (Callable[..., T]): Function or other callable to be measured.
+
+    Returns:
+        Callable[..., T]: A wrapper that behaves exactly like *func*, but logs
+        its execution time (in milliseconds) before returning the original
+        result.
+    """
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> T:
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        seconds = time.perf_counter() - start
+        h, rem = divmod(seconds, 3600)
+        m, s = divmod(rem, 60)
+        tstr = f"{int(h):02}:{int(m):02}:{s:06.3f}"
+        logging.debug("time_this -> %s executed in %s", func.__qualname__, tstr)
+        return result
+
+    return wrapper
 
 # --------------------------
 # Load configuration from prompts.yaml, env, and CLI
@@ -116,6 +148,7 @@ def execute_tool_function(tool_call: dict, client: "OllamaClient") -> dict:
 # Tools
 # --------------------------
 
+@time_this
 def web_search(query: str, k: int = 5) -> str:
     """
     Slogan: Query SearxNG and return the top k results as “[1] title – url – snippet.”
@@ -218,6 +251,7 @@ class OllamaClient:
             logging.error("❌ Failed fetching models: %s", e)
             sys.exit(1)
 
+    @time_this
     def send_direct_prompt(self, prompt_str: str) -> str:
         payload = {
             "model": self.model,
@@ -230,7 +264,7 @@ class OllamaClient:
         r.raise_for_status()
         if self.debug:
             logging.debug("send_direct_prompt() -> Response: %s", pp.pformat(r))
-        return r.json()["message"]["content"]
+        return self._clean_content(r.json()["message"]["content"])
 
     def _process_tool_calls(self, data: dict) -> list:
         msgs = []
@@ -240,6 +274,15 @@ class OllamaClient:
                 logging.debug("Tool call: %s → \n%s", call, pp.pformat(msgs))
         return msgs
 
+    def _clean_content(self, content: str) -> str:
+        """
+        Slogan: Remove the <think>.*</think> dialog and extra whitespace from 
+        the LLM returned content
+        """
+        str = re.sub(r"<think>.*</think>","",content)
+        return re.sub(r"\s+"," ",str)
+
+    @time_this
     def send_payload(self, payload: dict) -> list:
         """
         Slogan: Send the conversation payload to /api/chat with streaming,
@@ -285,13 +328,14 @@ class OllamaClient:
                 # process any tool calls embedded in this chunk
                 tool_msgs = self._process_tool_calls(chunk)
                 for tm in tool_msgs:
+                    tm["content"] = self._clean_content(tm["content"])
                     messages.append(tm)
 
             # final newline after the stream
             print()
 
         # append the combined assistant message at the end of tool calls
-        messages.append({"role": "assistant", "content": full})
+        messages.append({"role": "assistant", "content": self._clean_content(full)})
         return messages
 
 # --------------------------
@@ -344,6 +388,7 @@ class OllamaChat:
             # Merge the synthesis messages (should be assistant content only)
             if msgs:
                 for m in msgs:
+                    m["content"] = self.client._clean_content(m["content"])
                     self.payload["messages"].append(m)
             else:
                 # fallback if something went wrong
