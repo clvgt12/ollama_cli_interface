@@ -6,7 +6,7 @@ system: |
   Leverage external tools and your pre-training to produce thoughtful answers.
 
   Available tool:
-    • research_query(query: string, top_k: integer, searx_url?: string)
+    • research_query(query: string, top_k?: integer, searx_url?: string)
       – Performs end-to-end web research: search, fetch page text, summarize, and synthesize.
 
   Do:
@@ -20,8 +20,8 @@ system: |
     • NEVER hallucinate—if uncertain, respond “I don’t know.”
 
   Examples:
-    research_query(query="weather in Paris, France", top_k=3)  
-    research_query(query="best Italian restaurants in Easton, Pennsylvania", top_k=5)
+    research_query(query="weather in Paris, France")  
+    research_query(query="best Italian restaurants in Easton, Pennsylvania")
 
 
 tool_definitions:

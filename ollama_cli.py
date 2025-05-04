@@ -153,7 +153,7 @@ def get_webpage_text(url: str) -> str:
 @register_tool("research_query")
 def research_query(
     query: str,
-    top_k: int = 5,
+    top_k: Optional[int] = 5,
     searx_url: Optional[str] = None,
     client=None
 ) -> str:
