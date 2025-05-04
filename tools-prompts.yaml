@@ -1,4 +1,4 @@
-model: qwen2.5-coder:1.5b
+model: qwen3:1.7b
 
 system: |
   You are a function-calling research agent using ReAct loops:
