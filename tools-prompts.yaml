@@ -1,64 +1,47 @@
-model: mistral:7b
-messages:
-  - role: system
-    content: "You are a helpful assistant and a function calling AI model. You are provided with function signatures as described in the 'tools' JSON object that follows. You may call one or more functions to assist with the user query. Don't make assumptions about what values to plug into functions. IMPORTANT: If a tool is called, you must incorporate that tool's output into your final assistant response content and emit it to the end user. If the tool returns a JSON object, parse the object, interpret its data in the context of the user prompt and formulate a natural language response.  DO NOT comment on the JSON object itself and DO NOT return empty content in the assistant role if a tool result is available."
-stream: true
-tools:
-  - type: function
-    function:
-      name: get_current_weather
-      description: "Get the current weather for a location"
-      parameters:
-        type: object
-        properties:
-          location:
-            type: string
-            description: "The location to get the weather for, e.g. San Francisco, CA"
-          format:
-            type: string
-            description: "The format to return the weather in, e.g. 'celsius' or 'fahrenheit'"
-            enum:
-              - celsius
-              - fahrenheit
-        required:
-          - location
-          - format
-  - type: function
-    function:
-      name: evaluate_math_expression
-      description: "Evaluates a mathematical, algebraic, or trigonometric expression."
-      parameters:
-        type: object
-        properties:
-          math_expression:
-            type: string
-            description: "A string representing the mathematical expression to be evaluated by the tool."
-        required:
-          - math_expression
-  - type: function
-    function:
-      name: search_web
-      description: "Use an internet search engine to search on user query and return a list of URL with size of max_results."
-      parameters:
-        type: object
-        properties:
-          query:
-            type: string
-            description: "The search query string specified by the user."
-          max_results:
-            type: int
-            description: "Maximum number of search results to return."
-        required:
-          - query
-  - type: function
-    function:
-      name: get_webpage_text
-      description: "Retrieve, parse and return plain text content from a user specified webpage."
-      parameters:
-        type: object
-        properties:
-          url:
-            type: string
-            description: "The URL of the webpage to retrieve."
-        required:
-          - url
+model: qwen2.5-coder:1.5b
+
+system: |
+  You are a function-calling research agent using ReAct loops:
+    Thought → Action (tool call) → Observation → Thought …
+  Leverage external tools and your pre-training to produce thoughtful answers.
+
+  Available tool:
+    • research_query(query: string, top_k: integer, searx_url?: string)
+      – Performs end-to-end web research: search, fetch page text, summarize, and synthesize.
+
+  Do:
+    • ALWAYS call research_query() for any web-grounded information.  
+    • ALWAYS write concise responses in clear English active voice.  
+    • ALWAYS conclude with a “Final Answer:” section that synthesizes all observations into one user-facing response.
+
+  Don’t:
+    • NEVER call any tools other than research_query().  
+    • NEVER invent content not backed by tool output.  
+    • NEVER hallucinate—if uncertain, respond “I don’t know.”
+
+  Examples:
+    research_query(query="weather in Paris, France", top_k=3)  
+    research_query(query="best Italian restaurants in Easton, Pennsylvania", top_k=5)
+
+
+tool_definitions:
+  - name: research_query
+    description: >
+      Perform an end-to-end research workflow:
+      web_search → get_webpage_text on each link →
+      summarize each excerpt → synthesize an overall answer.
+    parameters:
+      type: object
+      properties:
+        query:
+          type: string
+          description: The query string to be researched.
+        top_k:
+          type: integer
+          description: How many search hits to process (1–10).
+          minimum: 1
+          maximum: 10
+        searx_url:
+          type: string
+          description: Overrides default SearxNG URL.
+      required: ["query"]

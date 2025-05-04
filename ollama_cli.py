@@ -1,756 +1,432 @@
 #!/usr/bin/env python3
 """
-Ollama CLI Agent with YAML-Imported JSON Chat History and Agentic Tool Execution
-- Loads an initial conversation payload from a YAML file (if specified or found).
-- Merges configuration values for host, model, and system prompt from command line,
-  environment variables, YAML file, and defaults.
-- Sends the complete payload to the /api/chat endpoint and updates it with responses.
-- Uses prompt_toolkit for an enhanced CLI experience.
-- Dynamically executes tool functions when the LLM indicates to do so.
+Ollama CLI Agent with Web Research Tool
+- Loads system prompt and tool definitions from prompts.yaml
+- Simple command-line interface to a locally hosted LLM
+- Supports web research (search + summarization) via self-hosted SearxNG
+- Persistent input history for recall
+- Configurable model, host, system prompt, and debug logging
 """
 
 import argparse
-import requests
+import inspect
 import json
 import os
-import re
 import sys
-import yaml  # Used for YAML file parsing
 import logging
+import requests
+import yaml
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
-from dotenv import load_dotenv
 from typing import Optional
+
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.key_binding import KeyBindings
 
-# Default values (lowest precedence)
+# --------------------------
+# Defaults and Constants
+# --------------------------
 DEFAULT_HOST = "localhost:11434"
-DEFAULT_MODEL = "mistral:latest"
-DEFAULT_SYSTEM = "you are a helpful assistant."
-DEFAULT_CLI_HISTORY_FILE = os.path.join(os.path.expanduser("~"), ".ollama_cli_prompt_history_file")
+DEFAULT_MODEL = "gemma3:1b"
+DEFAULT_SYSTEM = "You are a helpful assistant."
+DEFAULT_CLI_HISTORY_FILE = os.path.expanduser("~/.ollama_cli_prompt_history_file")
 
 # --------------------------
-# Global Tool Registry Setup
+# Load configuration from prompts.yaml, env, and CLI
 # --------------------------
+def merge_config(args: argparse.Namespace) -> dict:
+    """
+    Slogan: Merge configuration from CLI args, environment, and prompts.yaml.
+    Returns:
+        dict with keys host, model, system, tool_definitions, prompts_file.
+    """
+    # 1) Load YAML if specified or found
+    yaml_config = {}
+    prompts_file = args.prompts or ("prompts.yaml" if os.path.exists("prompts.yaml") else None)
+    if prompts_file:
+        try:
+            with open(prompts_file, "r") as f:
+                yaml_config = yaml.safe_load(f) or {}
+        except Exception as e:
+            logging.warning(f"[WARNING merge_config]: could not load '{prompts_file}': {e}")
 
-# Global registry for tool functions.
+    # 2) Extract from YAML
+    yaml_model = yaml_config.get("model")
+    yaml_system = yaml_config.get("system")
+    yaml_tools  = yaml_config.get("tool_definitions", [])
+
+    # 3) Environment overrides
+    env_host  = os.getenv("OLLAMA_HOST")
+    env_model = os.getenv("OLLAMA_MODEL")
+
+    # 4) Final precedence: CLI > env > YAML > default
+    final_host   = args.host  or env_host  or DEFAULT_HOST
+    final_model  = args.model or env_model or yaml_model or DEFAULT_MODEL
+    final_system = args.system or yaml_system or DEFAULT_SYSTEM
+
+    return {
+        "host": final_host,
+        "model": final_model,
+        "system": final_system,
+        "tool_definitions": yaml_tools,
+        "prompts_file": prompts_file
+    }
+
+# --------------------------
+# Tool Registry
+# --------------------------
 TOOL_REGISTRY = {}
 
-def register_tool(name):
+def register_tool(name: str):
     """
-    Slogan: Registers a tool function in the global tool registry.
-    Parameters:
-        name (str): The name of the tool function.
-    Returns:
-        function: Decorator that registers the function.
+    Slogan: Registers a tool function in the global registry.
     """
     def decorator(func):
         TOOL_REGISTRY[name] = func
         return func
     return decorator
 
-def execute_tool_function(tool_call: dict):
+def execute_tool_function(tool_call: dict, client: "OllamaClient") -> dict:
     """
-    Executes a tool function based on the provided tool call.
-    
-    This function extracts the tool function's name and its arguments from the
-    provided dictionary under the "function" key. It then retrieves the corresponding
-    function from the TOOL_REGISTRY and executes it with the given arguments.
-    
-    Parameters:
-        tool_call (dict): A dictionary containing a "function" key. The associated value 
-                          should be a dictionary with:
-                              - "name" (str): The name of the tool function to execute.
-                              - "arguments" (dict): A dictionary of arguments for the tool function.
-    
-    Returns:
-        dict: A JSON-like dictionary with the following keys:
-                - "tool": (str) The name of the executed tool function.
-                - "content": (Any) The result of executing the tool function. In case of an error,
-                             this will contain an error message.
+    Slogan: Execute a registered tool based on a function-call spec.
     """
-    # Retrieve the 'function' sub-dictionary
-    function_data = tool_call.get("function", {})
-    
-    # Extract the function's name and arguments
-    function_name = function_data.get("name", "")
-    function_args = function_data.get("arguments", {})
-
-    # Retrieve the tool function from the registry
-    tool_function = TOOL_REGISTRY.get(function_name)
-    if not tool_function:
-        error_msg = f"Tool '{function_name}' is not registered."
-        logging.error(error_msg)
-        raise ValueError(error_msg)
-    
+    func_data = tool_call.get("function", {})
+    name = func_data.get("name", "")
+    args = func_data.get("arguments", {})
+    fn = TOOL_REGISTRY.get(name)
+    if not fn:
+        msg = f"Tool '{name}' not registered."
+        logging.error(msg)
+        raise ValueError(msg)
     try:
-        # Execute the tool function with the provided arguments.
-        # NOTE: We use json.dumps() to serialize the result to a JSON string if needed.
-        result = {"role": "tool", "content": tool_function(**function_args)}
-        return result
+        sig = inspect.signature(fn)
+        if "client" in sig.parameters:
+            args["client"] = client
+        result = fn(**args)
+        return {"role": "tool", "content": result}
     except Exception as e:
-        logging.error("Error executing tool '%s': %s", function_name, e)
-        result = {"role": "tool", "content": f"Error executing tool: {e}"}
-        return result
+        logging.error("Error executing %s: %s", name, e)
+        return {"role": "tool", "content": f"Error executing {name}: {e}"}
 
 # --------------------------
-# Sample Tool Implementation
+# Tools
 # --------------------------
 
-@register_tool("get_current_weather")
-def get_current_weather(location: str, format: str) -> str:
+def web_search(query: str, k: int = 5, searx_url: Optional[str] = None) -> str:
     """
-    Slogan: Retrieves current weather forecast for a location using live API calls.
-    
-    Parameters:
-        location (str): The location in the format "city,state,country" (state is optional).
-        format (str): Temperature format, either 'celsius' or 'fahrenheit'.
-    
-    Returns:
-        str: A formatted string that includes a JSON object with current, minutely, hourly, 
-             and daily weather forecasts along with instructions for generating a natural language response.
+    Slogan: Query SearxNG and return the top k results as “[1] title – url – snippet.”
     """
-
-    def get_api_key(api_key_name: str = "OPENWEATHER_API_KEY") -> str:
-        """
-        Slogan: Retrieves the OpenWeatherMap API key from environment variables.
-        
-        This function obtains the API key from the 'OPENWEATHER_API_KEY' environment variable.
-        If the API key is not set, it logs an error and raises a ValueError.
-        
-        Returns:
-            str: The OpenWeatherMap API key.
-        
-        Raises:
-            ValueError: If the API key is missing from the environment.
-        """
-        load_dotenv(".env")
-        api_key = os.getenv(api_key_name)
-        if not api_key:
-            logging.error(f"API key for {api_key_name} is not set in the environment.")
-            raise ValueError(f"Missing API key for {api_key_name}.")
-        return api_key
-        
-    def refine_location(location: str) -> str:
-        """
-        Invokes Geoapify API call to ensure provided location contains city, state and county codes for given location.
-        
-        Parameters:
-            location (str): text string indicating the city, state, and country designations per user specification.
-            
-        Returns:
-            result (str): text string indicating the city, state, and country designations ISO 3166 standards returned by API call.
-        """
-
-        api_key = get_api_key("GEOAPIFY_API_KEY")
-        
-        base_url = "https://api.geoapify.com/v1/geocode/search"
-
-        params = {"text": location, "format": "json", "apiKey": api_key}
-        
-        try:
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-            json_obj = response.json()
-            city=json_obj['results'][0]['city']
-            state=json_obj['results'][0]['state_code']
-            country=json_obj['results'][0]['country_code']
-            return f"{city},{state.upper()},{country.upper()}"
-        except requests.RequestException as e:
-            logging.error(f"[ERROR refine_location()]: Error fetching geolocation for: {location}")
-            return location
-
-    def get_weather_forecast_by_location(location: str, units: str = "imperial") -> dict:
-        """
-        Retrieves weather forecast statistics for a given location using the OpenWeatherMap One Call API.
-        
-        Parameters:
-            location (str): text string indicating the city, state, and country designations per ISO 3166 standards.
-            units (str, optional): Units of measurement ('standard', 'metric', or 'imperial'). Defaults to 'standard'.
-            
-        Returns:
-            dict: A JSON object with weather forecast data (current, minutely, hourly, daily).
-        """
-
-        api_key = get_api_key("OPENWEATHER_API_KEY")
-        
-        base_url = "https://api.openweathermap.org/data/2.5/weather"
-
-        params = {"q": location, "units": units, "appid": api_key}
-        
-        try:
-            response = requests.get(base_url, params=params)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as e:
-            logging.error(f"[ERROR get_weather_forecast_by_location()]: Error fetching weather forecast: {e}")
-            raise
-
-    # Map the temperature format to API units.
-    units = "metric" if format.lower() == "celsius" else "imperial"
-    
-    # Get the weather forecast JSON object.
-    if location is not None:
-        updated_location=refine_location(location)
-        weather_json = get_weather_forecast_by_location(location=updated_location, units=units)
-
-        # Convert the JSON object to a string.
-        json_object_str = json.dumps(weather_json)
-
-        # Return the final string that includes instructions for generating a natural language response.
-        return (f"""Parse the JSON object and generate a natural language response. The JSON object contains weather forecast data for {updated_location} in the {units} system of measurements. In your introductory statement, state 'This is a weather summary for {updated_location}.' {json_object_str}""")
-    else:
-        return (f"""I didn't understand the location you provided. Can you enter it again?""")
-
-@register_tool("evaluate_math_expression")
-def evaluate_math_expression(math_expression: str) -> str:
-    """
-    Evaluates a mathematical, algebraic, or trigonometric expression.
-
-    Parameters:
-        math_expression (str): A string representing the mathematical expression to be evaluated by the tool.
-
-    Returns:
-        str: A formatted string that includes the mathematical result, 
-             along with instructions for generating a natural language response.
-
-    Raises:
-        ValueError: If the expression is invalid or cannot be evaluated.
-    """
-    from sympy import sympify, SympifyError
+    base = (searx_url or os.getenv("SEARXNG_URL", "http://localhost:8080")).rstrip("/")
+    k = max(1, min(int(k), 10))
+    params = {"q": query, "format": "json", "language": "en", "safesearch": 1, "categories": "general"}
     try:
-        # sympify converts string expression into a symbolic SymPy object
-        expr = sympify(math_expression)
-        # Evaluate the symbolic expression numerically
-        result = expr.evalf()
-        return f"Generate a natural language response to the user that the expression {math_expression} evaluates to {result}."
-    except SympifyError as e:
-        return f"Generate a natural language response to the user that {math_expression} may not be valid and they should check it for accuracy."
+        r = requests.get(f"{base}/search", params=params, timeout=8)
+        r.raise_for_status()
+        items = r.json().get("results", [])[:k]
+    except Exception as e:
+        logging.error("SearxNG request failed: %s", e)
+        raise RuntimeError(f"SearxNG request failed: {e}")
+    out = []
+    for i, it in enumerate(items, 1):
+        title = it.get("title","").strip()
+        url   = it.get("url","").strip()
+        snippet = it.get("content","").replace("\n"," ").strip()
+        out.append(f"[{i}] {title} – {url} – {snippet}")
+    return "\n".join(out) if out else "No results found."
 
-@register_tool("search_web")
-def search_web(query: str, max_results: int = 5) -> list:
-    """
-    Slogan: Use an internet search engine to search on user query and return a list of URL with size of max_results.
-    
-    Parameters:
-      query (str): The search query string specified by the user.
-      max_results (int): Maximum number of search results to return.
-    
-    Returns:
-      list: A list of URL strings from the search results.
-    """
-    results = []
-    # Use the DDGS context manager to handle the search session.
-    with DDGS() as ddgs:
-        # ddgs.text returns a generator of dictionaries containing search result details.
-        try:
-            for result in ddgs.text(query, max_results=max_results):
-                # Each result dictionary contains a key 'href' for the URL.
-                if "href" in result:
-                    results.append(result["href"])
-        except Exception as e:
-            results.append(f"I could not search the internet for this query {query} because I encountered this error {e}")
-    return results
-
-@register_tool("get_webpage_text")
 def get_webpage_text(url: str) -> str:
     """
-    Slogan: Retrieve, parse and return plain text content from a user specified webpage.
-    
-    Parameters:
-      url (str): The URL of the webpage to retrieve.
-    
-    Returns:
-      str: A string containing the cleaned textual content of the webpage.
+    Slogan: Retrieve and clean text from a web page.
     """
-    headers = {
-        # Again, using a common user agent string.
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-    }
-    
-    # Request the webpage.
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise an exception if the request fails.
+        r = requests.get(url, headers=headers, timeout=8)
+        r.raise_for_status()
     except Exception as e:
-        return f"I could not obtain the requested web page at {url} because I encountered this error {e}"
-    
-    # Parse the webpage content.
-    soup = BeautifulSoup(response.text, 'html.parser')
-    
-    # Remove script and style elements.
-    for element in soup(["script", "style"]):
-        element.extract()
-    
-    # Get the text, joining parts with a space and stripping extra whitespace.
-    text = soup.get_text(separator=' ', strip=True)
-    return f"Report back to the user that this is the text extracted from the requested web page: {text}"
+        return f"Error fetching {url}: {e}"
+    soup = BeautifulSoup(r.text, "html.parser")
+    for tag in soup(["script","style"]):
+        tag.extract()
+    return soup.get_text(separator=" ", strip=True)
 
-# --------------------------
-# Configuration Merging Logic
-# --------------------------
-
-def merge_config(args: argparse.Namespace) -> dict:
+@register_tool("research_query")
+def research_query(
+    query: str,
+    top_k: int = 5,
+    searx_url: Optional[str] = None,
+    client=None
+) -> str:
     """
-    Slogan: Merges configuration from command line, environment, YAML, and defaults.
-    Parameters:
-        args (argparse.Namespace): Parsed command-line arguments.
-    Returns:
-        dict: Merged configuration with keys: host, model, system, prompts_file.
+    Slogan: Web research workflow: search → fetch text → summarize → synthesize.
     """
-    # Attempt to load YAML configuration if a file is specified or if "prompts.yaml" exists.
-    yaml_config = {}
-    filename = None
-    if args.prompts:
-        filename = args.prompts
-    elif os.path.exists("prompts.yaml"):
-        filename = "prompts.yaml"
-    
-    if filename:
-        try:
-            with open(filename, "r") as f:
-                yaml_config = yaml.safe_load(f) or {}
-        except Exception as e:
-            logging.warning(f"[WARNING merge_config()]: Could not load prompts file '{filename}'")
-    
-    # Extract values from YAML file (if available)
-    yaml_host = yaml_config.get("host")
-    yaml_model = yaml_config.get("model") or yaml_config.get("model_name")
-    yaml_system = yaml_config.get("system") or yaml_config.get("system_prompt")
-    
-    # Environment variables
-    env_host = os.getenv("OLLAMA_HOST")
-    env_model = os.getenv("MODEL_NAME")
-    
-    # Merge using precedence: command line > environment > YAML > default.
-    final_host = (args.host if args.host is not None 
-                  else (env_host if env_host is not None 
-                        else (yaml_host if yaml_host is not None 
-                              else DEFAULT_HOST)))
-    
-    final_model = (args.model if args.model is not None 
-                   else (env_model if env_model is not None 
-                         else (yaml_model if yaml_model is not None 
-                               else DEFAULT_MODEL)))
-    
-    final_system = (args.system if args.system is not None 
-                    else (yaml_system if yaml_system is not None 
-                          else DEFAULT_SYSTEM))
-    
-    return {
-        "host": final_host,
-        "model": final_model,
-        "system": final_system,
-        "prompts_file": filename  # Either user-specified or discovered "prompts.yaml"
-    }
+    if client is None:
+        return "Internal error: missing LLM client."
+    hits = web_search(query=query, k=top_k, searx_url=searx_url).splitlines()
+    excerpts = []
+    for i, line in enumerate(hits, 1):
+        parts = line.split("–")
+        url = parts[1].strip() if len(parts)>1 else ""
+        text = get_webpage_text(url=url)
+        excerpts.append(f"--- Article {i} ({url}) ---\n{text}\n")
+    prompt = (
+        f"You are an expert research assistant. Query: {query}\n\n"
+        + "\n".join(excerpts)
+        + "\nPlease summarize each article and synthesize an overall answer."
+    )
+    return client.send_direct_prompt(prompt)
 
 # --------------------------
-# Ollama Client and Chat Classes
+# Ollama Client
 # --------------------------
 
 class OllamaClient:
     """
-    Client for interacting with the Ollama server.
-    Responsible only for making API calls.
+    Slogan: Client for interacting with the local Ollama server.
     """
-    def __init__(self, host: str, model: str, debug: bool = False):
-        """
-        Slogan: Initializes the Ollama client.
-        Parameters:
-            host (str): The Ollama server host.
-            model (str): The model name to use.
-            debug (bool): Flag to enable debug mode.
-        """
+    def __init__(self, host: str, model: str, debug: bool=False):
         self.host = host
         self.model = model
         self.debug = debug
-        self.base_url = f"http://{self.host}"
+        self.base_url = f"http://{host}"
+        self.config = {}  # will be set in main()
 
-    def _get_url(self, endpoint: str) -> str:
-        """
-        Slogan: Builds the full URL for an API endpoint.
-        Parameters:
-            endpoint (str): The API endpoint (e.g., '/api/tags').
-        Returns:
-            str: The full URL.
-        """
+    def _url(self, endpoint: str) -> str:
         return f"{self.base_url}{endpoint}"
 
-    def check_connection(self) -> None:
-        """
-        Slogan: Checks if the Ollama server is reachable.
-        Parameters: None.
-        Returns: None.
-        """
-        url = self._get_url("/api/tags")
+    def check_connection(self):
         try:
-            response = requests.get(url, timeout=3)
-            response.raise_for_status()
-            print("✅ Successfully connected to Ollama server.")
-        except requests.RequestException as e:
-            print(f"❌ Error: Unable to reach Ollama server at {self.host}.")
-            print("🔹 Ensure the server is running and reachable.")
+            r = requests.get(self._url("/api/tags"), timeout=3)
+            r.raise_for_status()
+            logging.info("✅ Connected to Ollama server at %s", self.host)
+        except Exception as e:
+            logging.error("❌ Cannot reach Ollama server: %s", e)
             sys.exit(1)
 
-    def verify_model(self) -> None:
-        """
-        Slogan: Verifies the specified model is available on the Ollama server.
-        Parameters: None.
-        Returns: None.
-        """
-        url = self._get_url("/api/tags")
+    def verify_model(self):
         try:
-            response = requests.get(url, timeout=3)
-            response.raise_for_status()
-            models = response.json().get("models", [])
-            available_models = [m["name"] for m in models]
-            if self.model not in available_models:
-                print(
-                    f"❌ Error: Model '{self.model}' is not available on the Ollama server at {self.host}."
-                )
-                print(
-                    f"🔹 Available models: {', '.join(available_models) if available_models else 'None'}"
-                )
+            r = requests.get(self._url("/api/tags"), timeout=3)
+            r.raise_for_status()
+            available = [m["name"] for m in r.json().get("models",[])]
+            if self.model not in available:
+                logging.error("❌ Model '%s' not available. Available: %s", self.model, available)
                 sys.exit(1)
-            print(f"✅ Model '{self.model}' is available on Ollama server.")
-        except requests.RequestException:
-            print("❌ Error: Failed to fetch models from Ollama.")
+            logging.info("✅ Using model: %s", self.model)
+        except Exception as e:
+            logging.error("❌ Failed fetching models: %s", e)
             sys.exit(1)
 
-    def _copy_tool_content_to_assistant(self, messages: str) -> str:
+    def send_direct_prompt(self, prompt_str: str) -> str:
+        payload = {
+            "model": self.model,
+            "messages": [{"role":"user","content":prompt_str}],
+            "stream": False
+        }
+        r = requests.post(self._url("/api/chat"), json=payload)
+        r.raise_for_status()
+        return r.json()["message"]["content"]
+
+    def _process_tool_calls(self, data: dict) -> list:
+        msgs = []
+        for call in data.get("message",{}).get("tool_calls",[]):
+            msgs.append(execute_tool_function(call, self))
+            if self.debug:
+                logging.debug("Tool call: %s → %s", call, msgs)
+        return msgs
+
+    def send_payload(self, payload: dict) -> list:
         """
-        Copies the 'content' from the 'tool' role message to the 'assistant' role message.
-
-        Args:
-            messages: A list of dictionaries, where each dictionary represents a message 
-                    with 'role' and 'content' keys.
-
-        Returns:
-            A new list of dictionaries with the 'content' of the 'assistant' message 
-            updated, or the original list if no 'tool' message is found before the 
-            'assistant' message.  Returns the original list if the structure is not 
-            as expected.
-        """
-
-        if not isinstance(messages, list):
-            return messages  # Handle unexpected input
-
-        tool_content = None
-        assistant_index = -1
-
-        for i, message in enumerate(messages):
-            if not isinstance(message, dict) or 'role' not in message or 'content' not in message:
-                return messages # unexpected message structure
-
-            if message['role'] == 'tool':
-                tool_content = message['content']
-            elif message['role'] == 'assistant':
-                assistant_index = i
-                break  # Found the assistant message, no need to continue
-
-        if tool_content is not None and assistant_index != -1:
-            messages[assistant_index]['content'] = tool_content
-
-        return messages
-
-    def _process_tool_calls(self, data: dict) -> str:
-        """
-        Slogan: Processes tool_calls object and calls functions.
-        Parameters:
-            data (dict): The complete response.
-        Returns:
-            tool_msgs(list of dict): A list of tool messages results from successive tool function calls
-        """
-        # Create an empty list to accumulate tool_msgs when processing the array tool_calls
-        tool_msgs = []
-        # Retrieve the 'message' sub-dictionary; use an empty dict if not present
-        message = data.get("message", {})
-        # Retrieve the 'tool_calls' array if it exists; otherwise, set to None
-        tool_calls = message.get("tool_calls",{})
-        if(tool_calls is not None):
-            for tool_call in tool_calls:
-                # Process assistant response for potential tool calls.
-                tool_msgs.append(execute_tool_function(tool_call)) 
-                if self.debug:
-                    print(f"[DEBUG OllamaClient]: tool_msgs:{tool_msgs}")
-        return tool_msgs
-
-    def send_payload(self, payload: dict) -> str:
-        """
-        Slogan: Sends the conversation payload to the /api/chat endpoint.
-        Parameters:
-            payload (dict): The complete conversation payload.
-        Returns:
-            messages (list of dict): The assistant's messages to be preserved in payload messages for chat memory.
+        Slogan: Send the conversation payload to /api/chat with streaming,
+        printing each partial assistant response as it arrives.
         """
         if self.debug:
-            print(f"\n[DEBUG OllamaClient] Request payload: {payload}")
-        url = self._get_url("/api/chat")
-        full_text = ""
+            logging.debug("Request payload: %s", payload)
+
         messages = []
-        try:
-            with requests.post(url, json=payload, stream=True) as response:
-                response.raise_for_status()
-                print(f"{self.model}> ", end="", flush=True)
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            text_piece = data["message"]["content"]
-                            full_text += text_piece
-                            if text_piece is not None and text_piece != "":
-                                print(text_piece, end="", flush=True)
-                            tool_response = self._process_tool_calls(data)
-                            if self.debug:
-                                print(f"\n[DEBUG OllamaClient] Response: {data}")
-                            if tool_response is not None:
-                                if self.debug:
-                                    print(f"\n[DEBUG OllamaClient] tool_response: {tool_response}")
-                                for t in tool_response:
-                                    messages.append(t)
-                        except json.JSONDecodeError:
-                            continue
-                print("\n")
-                if full_text is not None:
-                    messages.append({"role": "assistant", "content": full_text})
-                return messages
-        except requests.RequestException as e:
-            logging.error(f"\n[ERROR send_payload]:: Unable to reach Ollama server. {e}")
-            return []
+        # Make sure we're explicitly requesting streaming at the HTTP level too
+        headers = {"Accept": "text/event-stream"}  
+
+        with requests.post(
+            self._url("/api/chat"),
+            json=payload,
+            stream=True,
+            headers=headers,
+            timeout=(3.05, None)  # no read timeout
+        ) as resp:
+            resp.raise_for_status()
+            print(f"{self.model}> ", end="", flush=True)
+            full = ""
+
+            # chunk_size=1 forces us to see each newline-delimited JSON as soon as it's sent
+            for line in resp.iter_lines(chunk_size=1, decode_unicode=True):
+                if not line:
+                    continue
+                # each 'line' should be a complete JSON object
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    # sometimes you get keep-alive pings—ignore them
+                    continue
+
+                txt = chunk.get("message", {}).get("content", "") or ""
+                full += txt
+
+                # print each piece immediately
+                print(txt, end="", flush=True)
+
+                # process any tool calls embedded in this chunk
+                tool_msgs = self._process_tool_calls(chunk)
+                for tm in tool_msgs:
+                    messages.append(tm)
+
+            # final newline after the stream
+            print()
+
+        # append the combined assistant message at the end of tool calls
+        messages.append({"role": "assistant", "content": full})
+        return messages
+
+# --------------------------
+# CLI Chat Session
+# --------------------------
 
 class OllamaChat:
     """
-    Encapsulates the chat conversation with the Ollama server.
-    Manages the conversation payload and provides an interactive CLI.
+    Slogan: Manage interactive CLI chat with the LLM.
     """
-    def __init__(self, client: OllamaClient, prompts_file: Optional[str], system_prompt: str, debug: bool = False):
-        """
-        Slogan: Initializes the OllamaChat session.
-        Parameters:
-            client (OllamaClient): The client for server communication.
-            prompts_file (Optional[str]): Path to the YAML file with the initial payload.
-            system_prompt (str): A system prompt to initialize the conversation context.
-            debug (bool): Flag to enable debug mode.
-        Returns: None.
-        """
+    def __init__(self, client: OllamaClient, system_prompt: str, history_file: str, debug: bool=False):
         self.client = client
-        self.payload = self._load_payload(prompts_file, system_prompt)
+        self.system = system_prompt
+        self.history_file = history_file
         self.debug = debug
+        # initial payload
+        self.payload = {
+            "model": client.model,
+            "messages": [{"role":"system","content":self.system}],
+            "stream": True
+        }
+        # inject tools from prompts.yaml
+        td = client.config.get("tool_definitions", [])
+        if td:
+            self.payload["tools"] = td
 
-    def _load_payload(self, prompts_file: Optional[str], system_prompt: str) -> dict:
-        """
-        Slogan: Loads the payload from a YAML file or initializes an empty payload.
-        Parameters:
-            prompts_file (Optional[str]): YAML file path.
-            system_prompt (str): System prompt for initialization.
-        Returns:
-            dict: The conversation payload.
-        """
-        file_to_load = prompts_file if prompts_file else "prompts.yaml"
-        try:
-            with open(file_to_load, "r") as f:
-                payload = yaml.safe_load(f) or {}
-                if not isinstance(payload, dict):
-                    logging.warning(f"[WARNING load_payload]: '{file_to_load}' does not contain a valid dictionary. Using empty payload.")
-                    payload = {}
-        except Exception as e:
-            logging.warning(f"[WARNING load_payload]: Could not load prompts file '{file_to_load}': {e}. Creating empty payload.")
-            payload = {}
-
-        # Merge configuration into payload if not already set.
-        payload["model"] = (self.client.model if self.client.model is not None 
-                       else (payload.get("model")))
-        payload.setdefault("messages", [])
-        payload.setdefault("stream", True)
-        if system_prompt and not payload["messages"]:
-            payload["messages"].append({"role": "system", "content": system_prompt})
-        
-        # Optionally validate tools defined in the YAML.
-        if "tools" in payload:
-            for tool in payload["tools"]:
-                tool_name = tool.get("function", {}).get("name")
-                if tool_name and tool_name not in TOOL_REGISTRY:
-                    logging.warning(f"[WARNING load_payload]: Tool '{tool_name}' defined in YAML is not registered in the agent.")
-        
-        return payload
-
-    def _send_payload(self, user_input: str) -> None:
-        """
-        Slogan: Sends user input to the API and maintains conversational context.
-
-        Parameters:
-            user_input (str): The user's input string collected from the CLI.
-
-        Returns:
-            None: Updates internal payload state without returning data to caller.
-        """
-        if user_input.strip():
-            self.payload["messages"].append({"role": "user", "content": user_input})
-        messages = self.client.send_payload(self.payload)
+    def _send_payload(self, user_input: str):
+        self.payload["messages"].append({"role":"user","content":user_input})
+        msgs = self.client.send_payload(self.payload)
+        # merge tool + assistant messages into our payload
         if self.debug:
-            print(f"[DEBUG OllamaChat]: payload: {self.payload}")
-            print(f"[DEBUG OllamaChat]: messages: {messages}")
-        for m in messages:
-            if m['content']:
+            logging.debug("Payload before merging tool msgs: %s", self.payload)
+        for m in msgs:
+            # add either the tool output or the assistant’s final content
+            if m.get("content"):
                 self.payload["messages"].append(m)
-            if m['role'] == 'tool':
-                self._send_payload('')
+        if self.debug:
+            logging.debug("Payload after merging tool msgs: %s", self.payload)
+        # if the LLM requested a tool, ask the LLM to act on the tool's response(s)
+        if self.payload["messages"][-1].get("role") == "tool":
+            # this sends the tool response back into the LLM 
+            # so it can produce the final natural-language answer
+            self.payload["messages"].append({
+                "role":"user",
+                "content":"Make an observation of the tool responses in the current context, and based on your reasoning, take the next step. If you conclude there are no additional steps, exit your ReAct loop and issue your Final Answer. AVOID entering into recursive calls with tools!"
+            })
+            # Perform the synthesis call
+            msgs = self.client.send_payload(self.payload)
 
-    def _setup_key_bindings(self) -> KeyBindings:
-        """
-        Slogan: Sets up CLI key bindings.
-        Parameters: None.
-        Returns:
-            KeyBindings: The configured key bindings.
-        """
-        bindings = KeyBindings()
+            # Merge the synthesis messages (should be assistant content only)
+            if msgs:
+                for m in msgs:
+                    self.payload["messages"].append(m)
+            else:
+                # fallback if something went wrong
+                self.payload["messages"].append({
+                    "role":"assistant",
+                    "content":"I could not synthesize a response!"
+                })
 
-        @bindings.add("c-c")
+    def _setup_key_bindings(self):
+        kb = KeyBindings()
+        @kb.add("c-c")
         def _(event):
             print("\nExiting...")
             event.app.exit()
+        return kb
 
-        return bindings
-
-    # Implement persistent command line prompt queries
-
-    def _save_cli_history(self, history, filename=DEFAULT_CLI_HISTORY_FILE):
-        """
-        Save in-memory prompt history to a file.
-        
-        Parameters:
-        - history: InMemoryHistory instance containing prompt history.
-        - filename: File path where history will be saved.
-        """
-        try:
-            # Retrieve all history entries and keep only the last 250
-            recent_entries = history.get_strings()[-250:]
-
-            with open(filename, 'w') as f:
-                for entry in recent_entries:
-                    f.write(f"{entry}\n")
-        except IOError as e:
-            print(f"[ERROR] Saving CLI history failed: {e}")
-
-    def _load_cli_history(self, filename=DEFAULT_CLI_HISTORY_FILE):
-        """
-        Load prompt history from a file into InMemoryHistory.
-        
-        Parameters:
-        - filename: File path from which history will be loaded.
-        
-        Returns:
-        - An instance of InMemoryHistory containing previously saved entries.
-        """
-        history = InMemoryHistory()
-        if os.path.exists(filename):
+    def _load_history(self):
+        hist = InMemoryHistory()
+        if os.path.exists(self.history_file):
             try:
-                with open(filename, 'r') as f:
+                with open(self.history_file) as f:
                     for line in f:
-                        history.append_string(line.rstrip('\n'))
-            except IOError as e:
-                print(f"[ERROR] Loading CLI history failed: {e}")
-        return history
+                        hist.append_string(line.rstrip("\n"))
+            except Exception as e:
+                logging.error("Load history failed: %s", e)
+        return hist
 
-    def run(self) -> None:
-        """
-        Slogan: Runs the interactive chat loop.
-        Parameters: None.
-        Returns: None.
-        """
-        bindings = self._setup_key_bindings()
-        history = self._load_cli_history()
-
-        print("Welcome to the AI CLI Agent - Type your prompt and press Enter.")
-        print("Type 'exit' or 'quit' to end the session.")
-
+    def _save_history(self, history: InMemoryHistory):
         try:
-            while True:
-                user_input = prompt(
-                    "\nYour query?> ",
-                    history=history,
-                    auto_suggest=AutoSuggestFromHistory(),
-                    key_bindings=bindings,
-                )
-                if user_input.lower() in ["exit", "quit"]:
+            last = history.get_strings()[-250:]
+            with open(self.history_file,"w") as f:
+                f.write("\n".join(last))
+        except Exception as e:
+            logging.error("Save history failed: %s", e)
+
+    def run(self):
+        kb = self._setup_key_bindings()
+        history = self._load_history()
+        print("Welcome to Ollama CLI Agent. Type 'exit' or 'quit' to end.")
+        while True:
+            try:
+                inp = prompt("Your query?> ", history=history,
+                             auto_suggest=AutoSuggestFromHistory(),
+                             key_bindings=kb)
+                if inp.strip().lower() in {"exit","quit"}:
                     break
-                if user_input.strip() is None or user_input.strip() == "":
+                if not inp.strip():
                     continue
                 print("\nStarting inference...\n")
-                self._send_payload(user_input)
+                self._send_payload(inp)
+            except (EOFError, KeyboardInterrupt):
+                break
+        print("\nGoodbye!")
+        self._save_history(history)
 
-        except (EOFError, KeyboardInterrupt):
-            print("\nInterrupted by user.")
-
-        finally:
-            print("\nExiting...")
-            self._save_cli_history(history)
+# --------------------------
+# Argument Parsing & Main
+# --------------------------
 
 def parse_arguments() -> argparse.Namespace:
-    """
-    Slogan: Parses command-line arguments.
-    Parameters: None.
-    Returns:
-        argparse.Namespace: The parsed arguments.
-    """
-    parser = argparse.ArgumentParser(
-        description="Ollama AI Agent CLI - Interact with an AI agent using a local LLM."
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Model name to use (overrides environment and YAML)"
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default=None,
-        help="Ollama server host (overrides environment and YAML)"
-    )
-    parser.add_argument(
-        "--system",
-        type=str,
-        default=None,
-        help="A short system prompt to initialize the conversation context (overrides YAML)"
-    )
-    parser.add_argument(
-        "--prompts",
-        type=str,
-        default=None,
-        help="YAML file containing initial conversation context (default: prompts.yaml if exists)"
-    )
-    parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode to print raw responses"
-    )
-    return parser.parse_args()
+    p = argparse.ArgumentParser(description="Ollama CLI Agent – Local LLM + Web Research")
+    p.add_argument("--host",         help="Ollama host:port", default=None)
+    p.add_argument("--model",        help="Model name",       default=None)
+    p.add_argument("--system",       help="System prompt",    default=None)
+    p.add_argument("--prompts",      help="prompts.yaml file",default=None)
+    p.add_argument("--debug",        action="store_true",   help="Enable debug logging")
+    p.add_argument("--history-file", help="CLI history file", default=DEFAULT_CLI_HISTORY_FILE)
+    return p.parse_args()
 
-def main() -> None:
-    """
-    Slogan: Main entry point for the interactive CLI session.
-    Parameters: None.
-    Returns: None.
-    """
-    args = parse_arguments()
+def main():
+    args   = parse_arguments()
     config = merge_config(args)
-    
-    client = OllamaClient(host=config["host"], model=config["model"], debug=args.debug)
 
-    # Verify connection and model availability.
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="[%(levelname)s] %(message)s"
+    )
+
+    client = OllamaClient(host=config["host"], model=config["model"], debug=args.debug)
+    client.config = config
+
     client.check_connection()
     client.verify_model()
 
-    print(f"Connected to Ollama at {client.host}")
-    print(f"Using model: {client.model}")
-    if args.debug:
-        print("🔍 Debug mode enabled - Printing raw responses")
-
-    # Instantiate OllamaChat with the merged system prompt and prompts file.
-    chat_session = OllamaChat(client, config["prompts_file"], config["system"], debug=args.debug)
-    chat_session.run()
+    chat = OllamaChat(
+        client=client,
+        system_prompt=config["system"],
+        history_file=args.history_file,
+        debug=args.debug
+    )
+    chat.run()
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,6 @@
-model: mistral:7b
+model: gemma3:1b
 messages:
   - role: system
-    content: "Always talk in a bad French accent, like Inspector Clouseau from the Pink Panther!"
+    content: |
+      You are a helpful assistant.  Always talk like a pirate!
 stream: true
