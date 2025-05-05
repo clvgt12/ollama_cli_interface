@@ -9,6 +9,10 @@ Ollama CLI Agent with Web Research Tool
 """
 
 import argparse
+import bleach
+import contractions
+import ftfy
+import html
 import inspect
 import json
 import logging
@@ -22,6 +26,7 @@ import yaml
 from bs4 import BeautifulSoup
 from functools import wraps
 from typing import Optional, Callable, TypeVar, Any
+from unidecode import unidecode
 
 from prompt_toolkit import prompt
 from prompt_toolkit.history import InMemoryHistory
@@ -181,10 +186,25 @@ def get_webpage_text(url: str) -> str:
         r.raise_for_status()
     except Exception as e:
         return f"Error fetching {url}: {e}"
+    # improve html -> text cleaning
     soup = BeautifulSoup(r.text, "html.parser")
-    for tag in soup(["script","style"]):
-        tag.extract()
-    return soup.get_text(separator=" ", strip=True)
+    for tag in soup(["script","style","header","footer","nav"]):
+        tag.decompose()
+    text = soup.get_text(separator=" ", strip=True)
+
+    # Unicode fixes
+    text = ftfy.fix_text(text)
+    text = html.unescape(text)
+    text = unidecode(text)
+    text = contractions.fix(text)
+
+    # Remove URLs, collapse whitespace
+    text = re.sub(r"https?://\S+|www\.\S+", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # Final tag stripping & cleanup
+    text = bleach.clean(text, tags=[], strip=True)
+    return text
 
 @register_tool("research_query")
 def research_query(
